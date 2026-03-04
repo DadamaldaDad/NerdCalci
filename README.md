@@ -26,57 +26,48 @@
 ## Features
 
 ### Smart Calculations
-- **Variable Support**: Define variables and use them in calculations
-  ```
+
+> [!NOTE]
+> For a complete language reference of all operators, functions, and advanced syntax, please see the [Language Reference Guide](REFERENCE.md).
+
+- **Variable Support**
+
+  ```text
   a = 100
   b = 200
   total = a + b  # 300
   ```
-- **Composite Operations**: Compound assignments and increment/decrement
-  ```
+
+- **Composite Operations**
+
+  ```text
   score = 10
   score += 5     # 15
   score++        # 16
-  score *= 2     # 32
-  score /= 4     # 8
-  score %= 5     # 3 (remainder)
-  score--        # 2
+  score /= 4     # 4
   ```
-- **Percentage Calculations**: Natural percentage syntax
-  ```
+
+- **Percentage Calculations**
+
+  ```text
   20% of 50000    # 10000
   15% off 1000    # 850
   50000 + 10%     # 55000
   50000 - 5%      # 47500
   ```
-- **Comments**: Add notes with `#` symbol
-  ```
+
+- **Comments**
+
+  ```text
   price = 1000  # base price
   tax = 18% of price  # 180
   ```
-- **Mathematical Functions**: Built-in support for common math functions (see [exp4j documentation](https://www.objecthunter.net/exp4j/) for more details)
-  ```
+
+- **Mathematical Functions**
+
+  ```text
   sqrt(16)           # 4
-  sqrt 16            # 4
-  sin(pi/2)          # 1
-  log10(1000)        # 3
-  pow(2, 8)          # 256
-  abs(-42)           # 42
-
-  # Calculate circle area
-  radius = 5
-  area = pi() * pow(radius, 2)  # 78.54
-
-  # Convert degrees to radians and calculate sine
-  degrees = 45
-  radians = degrees * pi / 180
-  result = sin(radians)  # 0.71
-
-  # Exponential growth
-  principal = 1000
-  rate = 0.05
-  time = 10
-  amount = principal * exp(rate * time)  # 1648.72
+  sin(PI/2)          # 1
   ```
 
 ### Editor Features
@@ -155,7 +146,6 @@ You need to install [Obtainium](https://github.com/ImranR98/Obtainium) first on 
 - [**Jetpack Compose**](https://developer.android.com/compose) - Modern UI toolkit
 - [**Room Database**](https://developer.android.com/training/data-storage/room) - Local data persistence
 - [**Material Design 3**](https://developer.android.com/jetpack/androidx/releases/compose-material3) - UI components and theming
-- [**exp4j**](https://github.com/fasseg/exp4j) - Mathematical expression evaluation
 - [**Fira Code**](https://github.com/tonsky/FiraCode) - Monospace font with ligatures
 
 ## Development

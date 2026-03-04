@@ -12,8 +12,8 @@ android {
         applicationId = "com.vishaltelangre.nerdcalci"
         minSdk = 23
         targetSdk = 35
-        versionCode = 171
-        versionName = "1.7.1"
+        versionCode = 180
+        versionName = "1.8.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -64,8 +64,9 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
-    // Math parser
-    implementation("net.objecthunter:exp4j:0.4.8")
+    // Markdown rendering for Help Screen
+    implementation("io.noties.markwon:core:4.6.2")
+    implementation("io.noties.markwon:ext-tables:4.6.2")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
@@ -74,4 +75,14 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+}
+
+// Automatically bundled the REFERENCE.md from the project root into APK assets
+// so that the HelpScreen can render it dynamically without network requests
+tasks.register<Copy>("copyReferenceDocsToAssets") {
+    from("$rootDir/REFERENCE.md")
+    into("$projectDir/src/main/assets")
+}
+tasks.named("preBuild") {
+    dependsOn("copyReferenceDocsToAssets")
 }
