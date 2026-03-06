@@ -157,6 +157,14 @@ You need to install [Obtainium](https://github.com/ImranR98/Obtainium) first on 
 - [**Material Design 3**](https://developer.android.com/jetpack/androidx/releases/compose-material3) - UI components and theming
 - [**Fira Code**](https://github.com/tonsky/FiraCode) - Monospace font with ligatures
 
+## Inspiration
+
+A heartfelt thank you to the brilliant creators behind these incredible text-based calculators that inspired the creation of NerdCalci:
+
+- [**Numi**](https://numi.app/)
+- [**Calca**](https://calca.io/)
+- [**Soulver**](https://soulver.app/)
+
 ## Development
 
 ### Running Tests
