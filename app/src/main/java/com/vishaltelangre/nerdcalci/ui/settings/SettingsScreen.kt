@@ -1,5 +1,7 @@
 package com.vishaltelangre.nerdcalci.ui.settings
 
+import kotlin.math.roundToInt
+
 import android.content.Intent
 import android.net.Uri
 import android.text.format.DateUtils
@@ -88,6 +90,8 @@ fun SettingsScreen(
     availableBackups: List<BackupFileInfo>,
     onRestoreBackup: (BackupFileInfo) -> Unit,
     onRestoreFromDifferentLocation: () -> Unit,
+    precision: Int,
+    onPrecisionChange: (Int) -> Unit,
     onHelp: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -98,6 +102,8 @@ fun SettingsScreen(
     var showBackupNowActionDialog by remember { mutableStateOf(false) }
     var showLocationDialog by remember { mutableStateOf(false) }
     var showFrequencyDialog by remember { mutableStateOf(false) }
+
+    var sliderValue by remember(precision) { mutableStateOf(precision.toFloat()) }
 
     val appVersion = remember {
         try {
@@ -183,6 +189,47 @@ fun SettingsScreen(
                         )
                     }
                 }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Spacer(modifier = Modifier.height(8.dp))
+
+            SettingsSection(title = "Calculator")
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Result precision",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "${sliderValue.roundToInt()} decimal places",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                androidx.compose.material3.Slider(
+                    value = sliderValue,
+                    onValueChange = { sliderValue = it },
+                    onValueChangeFinished = { onPrecisionChange(sliderValue.roundToInt()) },
+                    valueRange = Constants.MIN_PRECISION.toFloat()..Constants.MAX_PRECISION.toFloat(),
+                    steps = Constants.MAX_PRECISION - Constants.MIN_PRECISION - 1,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
             }
 
             Spacer(modifier = Modifier.height(8.dp))
