@@ -6,19 +6,28 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.BasicTextField
@@ -34,10 +43,11 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FileCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PictureAsPdf
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.ViewHeadline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -58,16 +68,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.border
 import android.widget.Toast
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalDensity
+import androidx.navigation.NavHostController
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -89,14 +98,13 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.vishaltelangre.nerdcalci.core.Constants
 import com.vishaltelangre.nerdcalci.data.local.entities.LineEntity
 import com.vishaltelangre.nerdcalci.ui.components.DeleteFileDialog
@@ -110,8 +118,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 import com.vishaltelangre.nerdcalci.ui.theme.SyntaxColors
-import com.vishaltelangre.nerdcalci.ui.calculator.Suggestion
-import com.vishaltelangre.nerdcalci.ui.calculator.SuggestionType
+
 /**
  * Apply syntax highlighting to calculator expressions.
  *
@@ -238,6 +245,9 @@ fun CalculatorScreen(
     val canRedoMap by viewModel.canRedo.collectAsState()
     val canUndo = canUndoMap[fileId] ?: false
     val canRedo = canRedoMap[fileId] ?: false
+    val globalShowLineNumbers by viewModel.showLineNumbers.collectAsState()
+    var localShowLineNumbers by rememberSaveable(fileId) { mutableStateOf<Boolean?>(null) }
+    val effectiveShowLineNumbers = localShowLineNumbers ?: globalShowLineNumbers
     var showMenu by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var showDuplicateDialog by remember { mutableStateOf(false) }
@@ -364,6 +374,23 @@ fun CalculatorScreen(
                                     }
                                 )
                                 HorizontalDivider()
+                                val leadIcon = if (effectiveShowLineNumbers) Icons.Default.ViewHeadline else Icons.Default.FormatListNumbered
+                                DropdownMenuItem(
+                                    text = { Text(if (effectiveShowLineNumbers) "Hide line numbers" else "Show line numbers") },
+                                    onClick = {
+                                        val nextValue = !effectiveShowLineNumbers
+                                        localShowLineNumbers =
+                                            nextValue.takeUnless { it == globalShowLineNumbers }
+                                        showMenu = false
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            leadIcon,
+                                            contentDescription = null
+                                        )
+                                    }
+                                )
+
                                 DropdownMenuItem(
                                     text = { Text("Rename File") },
                                     leadingIcon = {
@@ -550,21 +577,43 @@ fun CalculatorScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
+            val textMeasurer = rememberTextMeasurer()
+            val gutterStyle = MaterialTheme.typography.bodySmall.copy(
+                fontFamily = FiraCodeFamily,
+                fontSize = 12.sp
+            )
+            val digitWidthPx = remember(textMeasurer, gutterStyle) {
+                textMeasurer.measure("0", style = gutterStyle).size.width
+            }
+            val digitWidth = with(LocalDensity.current) { digitWidthPx.toDp() }
+
+            val maxLineDigits = lines.size.toString().length
+            val numberWidth = (digitWidth * maxLineDigits)
+            val gutterOffset = 16.dp + numberWidth // 8dp start + 8dp end padding
+
             // Full-height vertical dividers as background
             Row(modifier = Modifier.fillMaxSize()) {
-                Box(modifier = Modifier.width(50.dp))
-                VerticalDivider(
-                    modifier = Modifier.fillMaxHeight(),
-                    thickness = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant
-                )
+                if (effectiveShowLineNumbers) {
+                    Box(modifier = Modifier.width(gutterOffset))
+                    VerticalDivider(
+                        modifier = Modifier.fillMaxHeight(),
+                        thickness = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+                }
                 Box(modifier = Modifier.weight(1f))
                 VerticalDivider(
                     modifier = Modifier.fillMaxHeight(),
                     thickness = 1.dp,
                     color = MaterialTheme.colorScheme.outlineVariant
                 )
-                Box(modifier = Modifier.width(120.dp))
+                // Continuous background for the result column
+                Box(
+                    modifier = Modifier
+                        .width(120.dp)
+                        .fillMaxHeight()
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                )
             }
 
             // LazyColumn with lines
@@ -577,9 +626,11 @@ fun CalculatorScreen(
                     val availableVariables = extractSuggestions(lines, line.sortOrder)
 
                     LineRow(
-                        lineNumber = index + 1,
                         line = line,
+                        lineNumber = index + 1,
+                        showLineNumbers = effectiveShowLineNumbers,
                         precision = precision,
+                        numberWidth = numberWidth,
                         availableVariables = availableVariables,
                         shouldFocus = focusLineId == line.id,
                         focusCursorPos = if (focusLineId == line.id) focusCursorPosition else null,
@@ -755,9 +806,11 @@ fun CalculatorScreen(
 
 @Composable
 private fun LineRow(
-    lineNumber: Int,
     line: LineEntity,
+    lineNumber: Int,
+    showLineNumbers: Boolean,
     precision: Int,
+    numberWidth: Dp,
     availableVariables: Set<Suggestion>,
     shouldFocus: Boolean,
     focusCursorPos: Int?,
@@ -927,33 +980,29 @@ private fun LineRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(IntrinsicSize.Min)
-            .background(MaterialTheme.colorScheme.background),
+            .height(IntrinsicSize.Min),
         verticalAlignment = Alignment.Top
     ) {
-        // Line number area
-        Box(
-            modifier = Modifier
-                .width(50.dp)
-                .fillMaxHeight()
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .padding(vertical = 10.dp),
-            contentAlignment = Alignment.TopEnd
-        ) {
+        if (showLineNumbers) {
+            // Line Number Gutter
             Text(
-                text = "$lineNumber",
-                style = MaterialTheme.typography.bodyLarge.copy(fontFamily = FiraCodeFamily),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(end = 8.dp)
+                text = lineNumber.toString(),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = FiraCodeFamily,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    fontSize = 12.sp
+                ),
+                modifier = Modifier
+                    .padding(start = 8.dp, top = 10.dp)
+                    .width(numberWidth),
+                textAlign = TextAlign.End,
+                softWrap = false,
+                maxLines = 1
             )
-        }
 
-        // Vertical divider after line gutter
-        VerticalDivider(
-            modifier = Modifier.fillMaxHeight(),
-            thickness = 1.dp,
-            color = MaterialTheme.colorScheme.outlineVariant
-        )
+            // Spacer for the global vertical divider
+            Spacer(modifier = Modifier.width(9.dp)) // 8.dp right padding + 1.dp divider
+        }
 
         // Editor with wrapping and autocomplete
         Box(
@@ -1180,12 +1229,6 @@ private fun LineRow(
             }
         }
 
-        // Vertical divider before result gutter
-        VerticalDivider(
-            modifier = Modifier.fillMaxHeight(),
-            thickness = 1.dp,
-            color = MaterialTheme.colorScheme.outlineVariant
-        )
 
         // Result
         Box(
