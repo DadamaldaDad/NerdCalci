@@ -105,6 +105,13 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.unit.IntOffset
 import com.vishaltelangre.nerdcalci.core.Constants
 import com.vishaltelangre.nerdcalci.data.local.entities.LineEntity
 import com.vishaltelangre.nerdcalci.ui.components.DeleteFileDialog
@@ -724,7 +731,8 @@ fun CalculatorScreen(
                                     nextLine.expression.length
                                 }
                             }
-                        }
+                        },
+                        onGetErrorMessage = { lineId -> viewModel.getLineErrorMessage(fileId, lineId) }
                     )
                     if (index < lines.size - 1) {
                         HorizontalDivider(
@@ -830,7 +838,8 @@ private fun LineRow(
     onEnter: () -> Unit,
     onDelete: () -> Unit,
     onNavigateUp: () -> Unit,
-    onNavigateDown: () -> Unit
+    onNavigateDown: () -> Unit,
+    onGetErrorMessage: suspend (Long) -> String? = { null }
 ) {
     // Add leading space for backspace detection trick (but not for first line)
     val displayText = if (line.expression.isEmpty() && lineNumber > 1) " " else line.expression
@@ -1239,19 +1248,115 @@ private fun LineRow(
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             contentAlignment = Alignment.TopEnd
         ) {
-            val resultColor = if (line.result == "Err") {
+            val isError = line.result == "Err"
+            val resultColor = if (isError) {
                 MaterialTheme.colorScheme.error
             } else {
                 com.vishaltelangre.nerdcalci.ui.theme.ResultSuccess
             }
-            Text(
-                text = MathEngine.formatDisplayResult(line.result, precision),
-                style = MaterialTheme.typography.bodyLarge.copy(
-                    fontFamily = FiraCodeFamily,
-                    fontWeight = FontWeight.Bold
-                ),
-                color = resultColor
-            )
+
+            var showTooltip by remember(line.id) { mutableStateOf(false) }
+            var errorMessage by remember(line.id) { mutableStateOf<String?>(null) }
+
+            LaunchedEffect(line.id, line.expression, isError, showTooltip) {
+                if (!isError) {
+                    // Reset state if line is no longer an error to prevent "double-tap"
+                    // requirement if it becomes an error again later.
+                    showTooltip = false
+                    errorMessage = null
+                } else if (showTooltip) {
+                    // Real-time refresh: Re-fetch error details if the expression
+                    // changes while the tooltip is already open.
+                    errorMessage = null
+                    errorMessage = try {
+                        onGetErrorMessage(line.id)
+                    } catch (e: Exception) {
+                        "Couldn't load error details"
+                    } ?: "Unknown error"
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.End,
+                modifier = if (isError) {
+                    Modifier
+                        .clickable {
+                            showTooltip = !showTooltip
+                            if (!showTooltip) {
+                                errorMessage = null
+                            }
+                        }
+                        .padding(bottom = 2.dp)
+                        .drawWithContent {
+                            drawContent()
+                            val stroke = Stroke(
+                                width = 1.dp.toPx(),
+                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx()), 0f)
+                            )
+                            val y = size.height
+                            drawLine(
+                                color = resultColor,
+                                start = Offset(0f, y),
+                                end = Offset(size.width, y),
+                                strokeWidth = 1.dp.toPx(),
+                                pathEffect = stroke.pathEffect
+                            )
+                        }
+                } else Modifier
+            ) {
+                if (isError) {
+                    Icon(
+                        imageVector = Icons.Outlined.Info,
+                        contentDescription = "Error Info",
+                        tint = resultColor,
+                        modifier = Modifier.padding(end = 4.dp).height(16.dp).width(16.dp)
+                    )
+                }
+                Text(
+                    text = MathEngine.formatDisplayResult(line.result, precision),
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontFamily = FiraCodeFamily,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = resultColor
+                )
+            }
+
+            if (showTooltip && isError) {
+                val density = LocalDensity.current
+                val yOffset = with(density) { 32.dp.roundToPx() }
+                val xOffset = with(density) { (-8).dp.roundToPx() }
+
+                Popup(
+                    alignment = Alignment.TopEnd,
+                    offset = IntOffset(xOffset, yOffset),
+                    onDismissRequest = { showTooltip = false }
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                color = MaterialTheme.colorScheme.error,
+                                shape = MaterialTheme.shapes.medium
+                            )
+                            .wrapContentHeight()
+                            .border(
+                                1.dp,
+                                MaterialTheme.colorScheme.onError.copy(alpha = 0.5f),
+                                MaterialTheme.shapes.medium
+                            )
+                            .padding(12.dp)
+                    ) {
+                        Text(
+                            text = errorMessage ?: "Loading error details...",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontFamily = FiraCodeFamily
+                            ),
+                            color = MaterialTheme.colorScheme.onError
+                        )
+                    }
+                }
+            }
         }
     }
 }
