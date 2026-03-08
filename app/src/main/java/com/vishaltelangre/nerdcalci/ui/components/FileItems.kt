@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileCopy
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -36,27 +37,34 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.vishaltelangre.nerdcalci.core.Constants
-import com.vishaltelangre.nerdcalci.data.local.entities.FileEntity
 import java.text.SimpleDateFormat
 import java.util.Locale
 
+import com.vishaltelangre.nerdcalci.core.Constants
+import com.vishaltelangre.nerdcalci.data.local.entities.FileEntity
+import com.vishaltelangre.nerdcalci.ui.calculator.CalculatorViewModel
+
 internal fun LazyListScope.addFileItems(
     files: List<FileEntity>,
-    onFileClick: (Long) -> Unit,
-    onRename: (Long, String) -> Unit,
-    onDuplicate: (Long, String) -> Unit,
-    onDelete: (Long) -> Unit,
-    onTogglePin: (Long) -> Unit
+    onItemClick: (Long) -> Unit,
+    onItemRename: (Long, String) -> Unit,
+    onItemDuplicate: (Long) -> Unit,
+    onItemDelete: (Long) -> Unit,
+    onItemTogglePin: (Long) -> Unit,
+    viewModel: CalculatorViewModel
 ) {
-    items(files, key = { it.id }) { file ->
+    items(
+        items = files,
+        key = { it: FileEntity -> it.id }
+    ) { file: FileEntity ->
         FileItem(
             file = file,
-            onClick = { onFileClick(file.id) },
-            onRename = { newName -> onRename(file.id, newName) },
-            onDuplicate = { newName -> onDuplicate(file.id, newName) },
-            onDelete = { onDelete(file.id) },
-            onTogglePin = { onTogglePin(file.id) }
+            onClick = { onItemClick(file.id) },
+            onRename = { newName -> onItemRename(file.id, newName) },
+            onDuplicate = { onItemDuplicate(file.id) },
+            onDelete = { onItemDelete(file.id) },
+            onTogglePin = { onItemTogglePin(file.id) },
+            viewModel = viewModel
         )
     }
 }
@@ -66,14 +74,15 @@ internal fun FileItem(
     file: FileEntity,
     onClick: () -> Unit,
     onRename: (String) -> Unit,
-    onDuplicate: (String) -> Unit,
+    onDuplicate: () -> Unit,
     onDelete: () -> Unit,
-    onTogglePin: () -> Unit
+    onTogglePin: () -> Unit,
+    viewModel: CalculatorViewModel
 ) {
     var showMenu by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
-    var showDuplicateDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var showInfoDialog by remember { mutableStateOf(false) }
 
     FileRowCard(
         file = file,
@@ -119,7 +128,7 @@ internal fun FileItem(
                     leadingIcon = { Icon(Icons.Default.FileCopy, contentDescription = null) },
                     onClick = {
                         showMenu = false
-                        showDuplicateDialog = true
+                        onDuplicate()
                     }
                 )
                 DropdownMenuItem(
@@ -130,12 +139,30 @@ internal fun FileItem(
                         showDeleteDialog = true
                     }
                 )
+                DropdownMenuItem(
+                    text = { Text("File info") },
+                    leadingIcon = { Icon(Icons.Outlined.Info, contentDescription = null) },
+                    onClick = {
+                        showMenu = false
+                        showInfoDialog = true
+                    }
+                )
             }
         }
     }
 
+    if (showInfoDialog) {
+        FileInfoDialog(
+            viewModel = viewModel,
+            file = file,
+            onDismiss = { showInfoDialog = false }
+        )
+    }
+
     if (showRenameDialog) {
         RenameFileDialog(
+            viewModel = viewModel,
+            fileId = file.id,
             currentName = file.name,
             onDismiss = { showRenameDialog = false },
             onConfirm = { newName ->
@@ -145,16 +172,6 @@ internal fun FileItem(
         )
     }
 
-    if (showDuplicateDialog) {
-        DuplicateFileDialog(
-            originalName = file.name,
-            onDismiss = { showDuplicateDialog = false },
-            onConfirm = { newName ->
-                onDuplicate(newName.take(Constants.MAX_FILE_NAME_LENGTH))
-                showDuplicateDialog = false
-            }
-        )
-    }
 
     if (showDeleteDialog) {
         DeleteFileDialog(

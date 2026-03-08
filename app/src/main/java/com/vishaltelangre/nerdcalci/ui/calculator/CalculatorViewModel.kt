@@ -5,6 +5,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vishaltelangre.nerdcalci.core.Constants
@@ -182,6 +185,10 @@ class CalculatorViewModel(
 
     fun getLines(fileId: Long): Flow<List<LineEntity>> = dao.getLinesForFile(fileId)
 
+    suspend fun getLineCount(fileId: Long): Int = withContext(Dispatchers.IO) {
+        dao.getLineCountForFile(fileId)
+    }
+
     // Update undo/redo availability for a file
     private fun updateUndoRedoState(fileId: Long) {
         _canUndo.value = _canUndo.value + (fileId to (undoStacks[fileId]?.isNotEmpty() == true))
@@ -282,7 +289,7 @@ class CalculatorViewModel(
         // Recalculate everything and batch-write results in one transaction
         val allLines = dao.getLinesForFileSync(fileId)
         val calculatedLines = MathEngine.calculate(allLines)
-        dao.updateLines(calculatedLines)
+        dao.updateLines(fileId, calculatedLines)
     }
 
     // Clear undo/redo history for a file
@@ -346,7 +353,7 @@ class CalculatorViewModel(
             val affectedLines = MathEngine.calculateFrom(allLines, changedIndex)
 
             // Batch-write all updated results in one DB transaction
-            dao.updateLines(affectedLines)
+            dao.updateLines(updatedLine.fileId, affectedLines)
         }
     }
 
@@ -365,12 +372,12 @@ class CalculatorViewModel(
         }
     }
 
-    // Create a new file
-    fun createNewFile(name: String, onCreated: (Long) -> Unit = {}) {
+
+
+    // Create a new file with a default "Untitled" name
+    fun createNewFile(onCreated: (Long) -> Unit = {}) {
         viewModelScope.launch(Dispatchers.IO) {
-            val fileId = dao.insertFile(FileEntity(name = name, lastModified = System.currentTimeMillis()))
-            // Start with one empty line
-            dao.insertLine(LineEntity(fileId = fileId, sortOrder = 0, expression = "", result = ""))
+            val fileId = dao.createNewFile("Untitled", System.currentTimeMillis())
             // Notify callback with new file ID on main thread
             withContext(Dispatchers.Main) {
                 onCreated(fileId)
@@ -379,35 +386,13 @@ class CalculatorViewModel(
     }
 
     // Duplicate an existing file with all its lines
-    fun duplicateFile(sourceFileId: Long, newName: String, onCreated: (Long) -> Unit = {}) {
+    fun duplicateFile(sourceFileId: Long, onCreated: (Long) -> Unit = {}) {
         viewModelScope.launch(Dispatchers.IO) {
-            val sourceFile = dao.getFileById(sourceFileId)
-            if (sourceFile != null) {
-                // Create new file
-                val newFileId = dao.insertFile(
-                    FileEntity(
-                        name = newName,
-                        lastModified = System.currentTimeMillis(),
-                        isPinned = false
-                    )
-                )
-
-                // Copy all lines from source file
-                val sourceLines = dao.getLinesForFileSync(sourceFileId)
-                sourceLines.forEach { sourceLine ->
-                    dao.insertLine(
-                        LineEntity(
-                            fileId = newFileId,
-                            sortOrder = sourceLine.sortOrder,
-                            expression = sourceLine.expression,
-                            result = sourceLine.result
-                        )
-                    )
-                }
-
+            val fileId = dao.duplicateFile(sourceFileId, System.currentTimeMillis())
+            if (fileId != null) {
                 // Notify callback with new file ID on main thread
                 withContext(Dispatchers.Main) {
-                    onCreated(newFileId)
+                    onCreated(fileId)
                 }
             }
         }
@@ -429,6 +414,11 @@ class CalculatorViewModel(
 
             // Insert new line at the specified position
             dao.insertLine(LineEntity(fileId = fileId, sortOrder = sortOrder, expression = "", result = ""))
+
+            // Recalculate everything from the new line downward
+            val updatedAllLines = dao.getLinesForFileSync(fileId)
+            val affectedLines = MathEngine.calculateFrom(updatedAllLines, sortOrder)
+            dao.updateLines(fileId, affectedLines)
         }
     }
 
@@ -447,40 +437,87 @@ class CalculatorViewModel(
                 .forEach { lineToShift ->
                     dao.updateLine(lineToShift.copy(sortOrder = lineToShift.sortOrder - 1))
                 }
+
+            // Recalculate everything from the deleted line's position downward
+            val updatedAllLines = dao.getLinesForFileSync(line.fileId)
+            val affectedLines = MathEngine.calculateFrom(updatedAllLines, line.sortOrder)
+            dao.updateLines(line.fileId, affectedLines)
         }
     }
 
     // Clear all lines in a file
     fun clearAllLines(fileId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            val allLines = dao.getLinesForFileSync(fileId)
-            allLines.forEach { line ->
-                dao.deleteLine(line)
-            }
-            // Create one empty line to start fresh
-            dao.insertLine(LineEntity(fileId = fileId, sortOrder = 0, expression = "", result = ""))
-
-            // Clear undo/redo history since everything is cleared
-            clearHistory(fileId)
+            saveStateForUndo(fileId)
+            dao.clearAllLines(fileId)
         }
     }
 
     fun deleteFile(fileId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            val allLines = dao.getLinesForFileSync(fileId)
-            allLines.forEach { line ->
-                dao.deleteLine(line)
+            val file = dao.getFileById(fileId)
+            if (file != null) {
+                dao.deleteFile(file)
             }
-            val file = FileEntity(id = fileId, name = "", lastModified = 0)
-            dao.deleteFile(file)
         }
     }
 
-    fun renameFile(fileId: Long, newName: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+    /**
+     * Deletes a file if it is empty and was created a while ago.
+     * This is used when navigating back from the calculator screen to prevent cluttering
+     * the home screen with accidentally created empty files.
+     */
+    suspend fun deleteFileIfEmptyAndRecent(fileId: Long) {
+        withContext(Dispatchers.IO) {
+            val file = dao.getFileById(fileId) ?: return@withContext
+            val lines = dao.getLinesForFileSync(fileId)
+
+            val isEmpty = lines.all { it.expression.isBlank() }
+            val now = System.currentTimeMillis()
+            val isRecent = now - file.createdAt < Constants.EMPTY_FILE_CLEANUP_THRESHOLD_MS
+            val untitledRegex = Regex("""^Untitled(\s\(\d+\))?$""") // Matches "Untitled", "Untitled (1)", "Untitled (2)", etc.
+            val isUntitled = untitledRegex.matches(file.name)
+
+            if (isEmpty && isRecent && isUntitled) {
+                dao.deleteFile(file)
+            }
+        }
+    }
+
+    suspend fun renameFile(fileId: Long, newName: String): Boolean {
+        return withContext(Dispatchers.IO) {
+            val trimmedName = newName.trim()
+            if (trimmedName.isBlank()) return@withContext false
+
+            val finalName = if (trimmedName.length > Constants.MAX_FILE_NAME_LENGTH) {
+                trimmedName.substring(0, Constants.MAX_FILE_NAME_LENGTH).trim()
+            } else {
+                trimmedName
+            }
+
+            if (finalName.isBlank()) return@withContext false
+
+            // Check if name is taken by another file
+            if (dao.doesFileExist(finalName, fileId)) {
+                return@withContext false
+            }
+
             val file = dao.getFileById(fileId)
             if (file != null) {
-                dao.updateFile(file.copy(name = newName, lastModified = System.currentTimeMillis()))
+                dao.updateFile(file.copy(name = finalName))
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    suspend fun doesFileExist(name: String, excludeId: Long? = null): Boolean {
+        return withContext(Dispatchers.IO) {
+            if (excludeId == null) {
+                dao.doesFileExist(name)
+            } else {
+                dao.doesFileExist(name, excludeId)
             }
         }
     }

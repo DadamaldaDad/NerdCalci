@@ -10,6 +10,7 @@ import com.vishaltelangre.nerdcalci.core.MathEngine
 import com.vishaltelangre.nerdcalci.data.local.CalculatorDao
 import com.vishaltelangre.nerdcalci.data.local.entities.FileEntity
 import com.vishaltelangre.nerdcalci.data.local.entities.LineEntity
+import com.vishaltelangre.nerdcalci.utils.FilenameUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -26,6 +27,8 @@ import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import java.nio.file.attribute.FileTime
+import android.os.Build
 
 private const val TAG = "BackupManager"
 
@@ -347,6 +350,12 @@ object BackupManager {
                 val content = formatFileContent(lines, precision)
 
                 val entry = ZipEntry("${file.name}${Constants.EXPORT_FILE_EXTENSION}")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    entry.setLastModifiedTime(FileTime.fromMillis(file.lastModified))
+                    entry.setCreationTime(FileTime.fromMillis(file.createdAt))
+                } else {
+                    entry.time = file.lastModified
+                }
                 zipOut.putNextEntry(entry)
                 zipOut.write(content.toByteArray())
                 zipOut.closeEntry()
@@ -359,8 +368,9 @@ object BackupManager {
     }
 
     private suspend fun importFromZip(dao: CalculatorDao, inputStream: InputStream): Int {
+        val existingFiles = dao.getAllFiles().first()
+        val existingNames = existingFiles.map { it.name }.toMutableSet()
         var importedCount = 0
-        val existingFilesByName = dao.getAllFiles().first().associateBy { it.name }.toMutableMap()
 
         ZipInputStream(inputStream).use { zipIn ->
             var entry: ZipEntry? = zipIn.nextEntry
@@ -382,40 +392,56 @@ object BackupManager {
                         }
                         .filter { it.isNotEmpty() }
 
-                    val existingFile = existingFilesByName[fileName]
-                    val fileId = if (existingFile != null) {
-                        val oldLines = dao.getLinesForFileSync(existingFile.id)
-                        oldLines.forEach { dao.deleteLine(it) }
-                        existingFile.id
+                    val finalFileName = if (existingNames.contains(fileName)) {
+                        FilenameUtils.generateUniqueFileName(fileName) { name ->
+                            existingNames.contains(name)
+                        }
                     } else {
-                        val newFileId = dao.insertFile(
-                            FileEntity(
-                                name = fileName,
-                                lastModified = System.currentTimeMillis()
-                            )
-                        )
-                        existingFilesByName[fileName] = FileEntity(
-                            id = newFileId,
-                            name = fileName,
-                            lastModified = System.currentTimeMillis()
-                        )
-                        newFileId
+                        fileName
                     }
 
-                    expressions.forEachIndexed { index, expr ->
-                        dao.insertLine(
-                            LineEntity(
-                                fileId = fileId,
-                                sortOrder = index,
-                                expression = expr,
-                                result = ""
-                            )
+                    val modifiedTime = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        entry.lastModifiedTime?.toMillis() ?: entry.time
+                    } else {
+                        entry.time
+                    }
+                    val createTime = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        entry.creationTime?.toMillis() ?: modifiedTime
+                    } else {
+                        modifiedTime
+                    }
+
+                    // ZipEntry.time defaults to -1 if no time info is present.
+                    // We only use System.currentTimeMillis() as a final fallback.
+                    val finalModifiedTime = if (modifiedTime != -1L) modifiedTime else System.currentTimeMillis()
+                    val finalCreateTime = if (createTime != -1L) createTime else finalModifiedTime
+
+                    val fileId = dao.insertFile(
+                        FileEntity(
+                            name = finalFileName,
+                            lastModified = finalModifiedTime,
+                            createdAt = finalCreateTime
+                        )
+                    )
+                    existingNames.add(finalFileName)
+
+                    val lineEntities = expressions.mapIndexed { index, expr ->
+                        LineEntity(
+                            fileId = fileId,
+                            sortOrder = index,
+                            expression = expr,
+                            result = ""
                         )
                     }
+                    dao.insertLinesWithoutTouch(lineEntities)
 
                     val allLines = dao.getLinesForFileSync(fileId)
                     val calculatedLines = MathEngine.calculate(allLines)
-                    calculatedLines.forEach { dao.updateLine(it) }
+                    dao.updateLines(fileId, calculatedLines)
+
+                    // Final touch to ensure the timestamp is exactly as intended,
+                    // even after updateLines might have moved it to "now".
+                    dao.touchFile(fileId, finalModifiedTime)
                     importedCount++
                 }
 

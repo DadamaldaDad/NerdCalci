@@ -1,51 +1,155 @@
 package com.vishaltelangre.nerdcalci.data.local
 
 import androidx.room.*
+import com.vishaltelangre.nerdcalci.core.Constants
 import com.vishaltelangre.nerdcalci.data.local.entities.FileEntity
 import com.vishaltelangre.nerdcalci.data.local.entities.LineEntity
+import com.vishaltelangre.nerdcalci.utils.FilenameUtils
 import kotlinx.coroutines.flow.Flow
 
 /**
  * Data Access Object for calculator database operations.
  */
 @Dao
-interface CalculatorDao {
+abstract class CalculatorDao {
     // Returns files with pinned files first, then sorted by most recently modified
     @Query("SELECT * FROM files ORDER BY isPinned DESC, lastModified DESC")
-    fun getAllFiles(): Flow<List<FileEntity>>
+    abstract fun getAllFiles(): Flow<List<FileEntity>>
 
     @Query("SELECT * FROM files WHERE id = :fileId")
-    suspend fun getFileById(fileId: Long): FileEntity?
+    abstract suspend fun getFileById(fileId: Long): FileEntity?
 
     @Query("SELECT COUNT(*) FROM files WHERE isPinned = 1")
-    suspend fun getPinnedFilesCount(): Int
+    abstract suspend fun getPinnedFilesCount(): Int
+
+    @Query("SELECT EXISTS(SELECT 1 FROM files WHERE name = :name)")
+    abstract suspend fun doesFileExist(name: String): Boolean
+
+    @Query("SELECT EXISTS(SELECT 1 FROM files WHERE name = :name AND id != :excludeId)")
+    abstract suspend fun doesFileExist(name: String, excludeId: Long): Boolean
 
     // Returns lines ordered by sortOrder (determines display order in UI)
     @Query("SELECT * FROM lines WHERE fileId = :fileId ORDER BY sortOrder ASC")
-    fun getLinesForFile(fileId: Long): Flow<List<LineEntity>>
+    abstract fun getLinesForFile(fileId: Long): Flow<List<LineEntity>>
 
     // Synchronous version for operations that need immediate results
     @Query("SELECT * FROM lines WHERE fileId = :fileId ORDER BY sortOrder ASC")
-    suspend fun getLinesForFileSync(fileId: Long): List<LineEntity>
+    abstract suspend fun getLinesForFileSync(fileId: Long): List<LineEntity>
+
+    @Query("SELECT COUNT(*) FROM lines WHERE fileId = :fileId")
+    abstract suspend fun getLineCountForFile(fileId: Long): Int
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertFile(file: FileEntity): Long
+    abstract suspend fun insertFile(file: FileEntity): Long
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertLine(line: LineEntity): Long
+    protected abstract suspend fun internalInsertLines(lines: List<LineEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    protected abstract suspend fun internalInsertLine(line: LineEntity): Long
 
     @Update
-    suspend fun updateLine(line: LineEntity)
+    protected abstract suspend fun internalUpdateLine(line: LineEntity)
 
     @Update
-    suspend fun updateLines(lines: List<LineEntity>)
-
-    @Update
-    suspend fun updateFile(file: FileEntity)
+    protected abstract suspend fun internalUpdateLines(lines: List<LineEntity>)
 
     @Delete
-    suspend fun deleteFile(file: FileEntity)
+    protected abstract suspend fun internalDeleteLine(line: LineEntity)
+
+    @Update
+    protected abstract suspend fun internalUpdateFile(file: FileEntity)
 
     @Delete
-    suspend fun deleteLine(line: LineEntity)
+    abstract suspend fun deleteFile(file: FileEntity)
+
+    @Query("UPDATE files SET lastModified = :timestamp WHERE id = :fileId")
+    protected abstract suspend fun updateFileTimestamp(fileId: Long, timestamp: Long)
+
+    suspend fun touchFile(fileId: Long, timestamp: Long = System.currentTimeMillis()) {
+        updateFileTimestamp(fileId, timestamp)
+    }
+
+    @Transaction
+    open suspend fun insertLine(line: LineEntity): Long {
+        val id = internalInsertLine(line)
+        touchFile(line.fileId)
+        return id
+    }
+
+    @Transaction
+    open suspend fun insertLinesWithoutTouch(lines: List<LineEntity>) {
+        internalInsertLines(lines)
+    }
+
+    @Transaction
+    open suspend fun updateLine(line: LineEntity) {
+        internalUpdateLine(line)
+        touchFile(line.fileId)
+    }
+
+    @Transaction
+    open suspend fun updateLines(fileId: Long, lines: List<LineEntity>) {
+        if (lines.isEmpty()) return
+        internalUpdateLines(lines)
+        touchFile(fileId)
+    }
+
+    @Transaction
+    open suspend fun deleteLine(line: LineEntity) {
+        internalDeleteLine(line)
+        touchFile(line.fileId)
+    }
+
+    @Transaction
+    open suspend fun updateFile(file: FileEntity) {
+        internalUpdateFile(file.copy(lastModified = System.currentTimeMillis()))
+    }
+
+    @Transaction
+    open suspend fun createNewFile(baseName: String, createdAt: Long): Long {
+        val uniqueName = FilenameUtils.generateUniqueFileName(baseName) { name ->
+            doesFileExist(name)
+        }
+        val fileId = insertFile(FileEntity(name = uniqueName, lastModified = createdAt, createdAt = createdAt))
+        // Insert a default empty line
+        internalInsertLine(LineEntity(fileId = fileId, sortOrder = 0, expression = "", result = ""))
+        return fileId
+    }
+
+    @Transaction
+    open suspend fun duplicateFile(sourceFileId: Long, createdAt: Long): Long? {
+        val sourceFile = getFileById(sourceFileId) ?: return null
+        val sourceLines = getLinesForFileSync(sourceFileId)
+
+        val baseName = "Copy of ${sourceFile.name}"
+        val uniqueName = FilenameUtils.generateUniqueFileName(baseName.take(Constants.MAX_FILE_NAME_LENGTH)) { name ->
+            doesFileExist(name)
+        }
+
+        val newFileId = insertFile(
+            FileEntity(
+                name = uniqueName,
+                lastModified = createdAt,
+                createdAt = createdAt,
+                isPinned = false
+            )
+        )
+
+        val newLines = sourceLines.map { it.copy(id = 0, fileId = newFileId) }
+        internalInsertLines(newLines)
+
+        return newFileId
+    }
+
+    @Transaction
+    open suspend fun clearAllLines(fileId: Long) {
+        val allLines = getLinesForFileSync(fileId)
+        allLines.forEach { line ->
+            internalDeleteLine(line)
+        }
+        // Create one empty line to start fresh
+        internalInsertLine(LineEntity(fileId = fileId, sortOrder = 0, expression = "", result = ""))
+        touchFile(fileId)
+    }
 }

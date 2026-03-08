@@ -3,6 +3,7 @@ package com.vishaltelangre.nerdcalci.ui.calculator
 import com.vishaltelangre.nerdcalci.core.Builtins
 import com.vishaltelangre.nerdcalci.core.MathEngine
 import androidx.compose.foundation.background
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -118,8 +119,8 @@ import androidx.compose.ui.unit.IntOffset
 import com.vishaltelangre.nerdcalci.core.Constants
 import com.vishaltelangre.nerdcalci.data.local.entities.LineEntity
 import com.vishaltelangre.nerdcalci.ui.components.DeleteFileDialog
-import com.vishaltelangre.nerdcalci.ui.components.DuplicateFileDialog
 import com.vishaltelangre.nerdcalci.ui.components.RenameFileDialog
+import com.vishaltelangre.nerdcalci.ui.components.FileInfoDialog
 import com.vishaltelangre.nerdcalci.ui.theme.FiraCodeFamily
 import com.vishaltelangre.nerdcalci.utils.ExportUtils
 import com.vishaltelangre.nerdcalci.utils.SyntaxUtils
@@ -281,6 +282,16 @@ fun CalculatorScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+
+    val handleBack = {
+        coroutineScope.launch {
+            viewModel.deleteFileIfEmptyAndRecent(fileId)
+            onBack()
+        }
+        Unit
+    }
+
+    BackHandler(onBack = handleBack)
     val lines by viewModel.getLines(fileId).collectAsState(initial = emptyList())
     val precision by viewModel.precision.collectAsState()
     val files by viewModel.allFiles.collectAsState(initial = emptyList())
@@ -293,10 +304,11 @@ fun CalculatorScreen(
     val effectiveShowLineNumbers = localShowLineNumbers ?: globalShowLineNumbers
     var showMenu by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
-    var showDuplicateDialog by remember { mutableStateOf(false) }
     var showClearConfirmDialog by remember { mutableStateOf(false) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
-    val fileName = files.find { it.id == fileId }?.name ?: "Editor"
+    var showInfoDialog by remember { mutableStateOf(false) }
+    val currentFile = files.find { it.id == fileId }
+    val fileName = currentFile?.name ?: "Editor"
 
     // Track which line should be focused and cursor position
     var focusLineId by remember { mutableStateOf<Long?>(null) }
@@ -356,12 +368,13 @@ fun CalculatorScreen(
                         Text(
                             text = fileName,
                             color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.clickable { showRenameDialog = true },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     },
                     navigationIcon = {
-                        IconButton(onClick = onBack) {
+                        IconButton(onClick = handleBack) {
                             Icon(
                                 Icons.AutoMirrored.Filled.ArrowBack,
                                 "Back",
@@ -448,6 +461,19 @@ fun CalculatorScreen(
                                     }
                                 )
                                 DropdownMenuItem(
+                                    text = { Text("File info") },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Outlined.Info,
+                                            contentDescription = null
+                                        )
+                                    },
+                                    onClick = {
+                                        showMenu = false
+                                        showInfoDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
                                     text = { Text("Duplicate File") },
                                     leadingIcon = {
                                         Icon(
@@ -457,7 +483,9 @@ fun CalculatorScreen(
                                     },
                                     onClick = {
                                         showMenu = false
-                                        showDuplicateDialog = true
+                                        viewModel.duplicateFile(fileId) { newFileId ->
+                                            onNavigateToFile(newFileId)
+                                        }
                                     }
                                 )
                                 HorizontalDivider()
@@ -784,29 +812,24 @@ fun CalculatorScreen(
     // Rename File dialog
     if (showRenameDialog) {
         RenameFileDialog(
+            viewModel = viewModel,
+            fileId = fileId,
             currentName = fileName,
             onDismiss = { showRenameDialog = false },
             onConfirm = { newName ->
-                viewModel.renameFile(fileId, newName.take(Constants.MAX_FILE_NAME_LENGTH))
+                coroutineScope.launch {
+                    viewModel.renameFile(fileId, newName)
+                }
                 showRenameDialog = false
             }
         )
     }
 
-    // Duplicate File dialog
-    if (showDuplicateDialog) {
-        DuplicateFileDialog(
-            originalName = fileName,
-            onDismiss = { showDuplicateDialog = false },
-            onConfirm = { newName ->
-                viewModel.duplicateFile(
-                    fileId,
-                    newName.take(Constants.MAX_FILE_NAME_LENGTH)
-                ) { newFileId ->
-                    onNavigateToFile(newFileId)
-                }
-                showDuplicateDialog = false
-            }
+    if (showInfoDialog && currentFile != null) {
+        FileInfoDialog(
+            viewModel = viewModel,
+            file = currentFile,
+            onDismiss = { showInfoDialog = false }
         )
     }
 
