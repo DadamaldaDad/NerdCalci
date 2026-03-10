@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 data class FileSnapshot(
@@ -35,6 +37,9 @@ class CalculatorViewModel(
     private val dao: CalculatorDao,
     private val prefs: SharedPreferences? = null
 ) : ViewModel() {
+
+    // Mutex to ensure atomic recalculation cycles per fileId
+    private val calculationMutex = Mutex()
 
     companion object {
         private const val PREF_PRECISION = "precision"
@@ -217,74 +222,50 @@ class CalculatorViewModel(
     // Undo last action
     fun undo(fileId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            val undoStack = undoStacks[fileId] ?: return@launch
-            if (undoStack.isEmpty()) return@launch
+            calculationMutex.withLock {
+                val undoStack = undoStacks[fileId] ?: return@withLock
+                if (undoStack.isEmpty()) return@withLock
 
-            // Save current state to redo stack
-            val currentLines = dao.getLinesForFileSync(fileId)
-            val currentSnapshot = FileSnapshot(currentLines.map { it.copy() })
-            val redoStack = redoStacks.getOrPut(fileId) { mutableListOf() }
-            redoStack.add(currentSnapshot)
+                // Save current state to redo stack
+                val currentLines = dao.getLinesForFileSync(fileId)
+                val currentSnapshot = FileSnapshot(currentLines.map { it.copy() })
+                val redoStack = redoStacks.getOrPut(fileId) { mutableListOf() }
+                redoStack.add(currentSnapshot)
 
-            // Restore previous state
-            val previousSnapshot = undoStack.removeAt(undoStack.size - 1)
-            restoreSnapshot(fileId, previousSnapshot)
+                // Restore previous state
+                val previousSnapshot = undoStack.removeAt(undoStack.size - 1)
+                restoreSnapshot(fileId, previousSnapshot)
 
-            updateUndoRedoState(fileId)
+                updateUndoRedoState(fileId)
+            }
         }
     }
 
     // Redo last undone action
     fun redo(fileId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            val redoStack = redoStacks[fileId] ?: return@launch
-            if (redoStack.isEmpty()) return@launch
+            calculationMutex.withLock {
+                val redoStack = redoStacks[fileId] ?: return@withLock
+                if (redoStack.isEmpty()) return@withLock
 
-            // Save current state to undo stack
-            val currentLines = dao.getLinesForFileSync(fileId)
-            val currentSnapshot = FileSnapshot(currentLines.map { it.copy() })
-            val undoStack = undoStacks.getOrPut(fileId) { mutableListOf() }
-            undoStack.add(currentSnapshot)
+                // Save current state to undo stack
+                val currentLines = dao.getLinesForFileSync(fileId)
+                val currentSnapshot = FileSnapshot(currentLines.map { it.copy() })
+                val undoStack = undoStacks.getOrPut(fileId) { mutableListOf() }
+                undoStack.add(currentSnapshot)
 
-            // Restore redo state
-            val redoSnapshot = redoStack.removeAt(redoStack.size - 1)
-            restoreSnapshot(fileId, redoSnapshot)
+                // Restore redo state
+                val redoSnapshot = redoStack.removeAt(redoStack.size - 1)
+                restoreSnapshot(fileId, redoSnapshot)
 
-            updateUndoRedoState(fileId)
+                updateUndoRedoState(fileId)
+            }
         }
     }
 
     // Restore a snapshot with minimal UI flashing
     private suspend fun restoreSnapshot(fileId: Long, snapshot: FileSnapshot) {
-        val currentLines = dao.getLinesForFileSync(fileId)
-        val snapshotLines = snapshot.lines
-
-        // Update existing lines in-place, then handle extras
-        val minSize = minOf(currentLines.size, snapshotLines.size)
-
-        // Update existing lines
-        for (i in 0 until minSize) {
-            val updatedLine = currentLines[i].copy(
-                expression = snapshotLines[i].expression,
-                result = snapshotLines[i].result,
-                sortOrder = snapshotLines[i].sortOrder
-            )
-            dao.updateLine(updatedLine)
-        }
-
-        // If snapshot has more lines, insert the extras
-        if (snapshotLines.size > currentLines.size) {
-            for (i in minSize until snapshotLines.size) {
-                dao.insertLine(snapshotLines[i].copy(id = 0))
-            }
-        }
-
-        // If current has more lines, delete the extras
-        if (currentLines.size > snapshotLines.size) {
-            for (i in minSize until currentLines.size) {
-                dao.deleteLine(currentLines[i])
-            }
-        }
+        dao.restoreLines(fileId, snapshot.lines)
 
         // Recalculate everything and batch-write results in one transaction
         val allLines = dao.getLinesForFileSync(fileId)
@@ -294,9 +275,13 @@ class CalculatorViewModel(
 
     // Clear undo/redo history for a file
     fun clearHistory(fileId: Long) {
-        undoStacks[fileId]?.clear()
-        redoStacks[fileId]?.clear()
-        updateUndoRedoState(fileId)
+        viewModelScope.launch(Dispatchers.IO) {
+            calculationMutex.withLock {
+                undoStacks[fileId]?.clear()
+                redoStacks[fileId]?.clear()
+                updateUndoRedoState(fileId)
+            }
+        }
     }
 
     // Format lines with intelligent result display
@@ -338,22 +323,24 @@ class CalculatorViewModel(
     // Update a line and recalculate everything from it downward
     fun updateLine(updatedLine: LineEntity) {
         viewModelScope.launch(Dispatchers.IO) {
-            // Save the user's current typing
-            dao.updateLine(updatedLine)
+            calculationMutex.withLock {
+                // Save the user's current typing
+                dao.updateLine(updatedLine)
 
-            // Fetch all lines for this file to ensure context is correct
-            val allLines = dao.getLinesForFileSync(updatedLine.fileId)
+                // Fetch all lines for this file to ensure context is correct
+                val allLines = dao.getLinesForFileSync(updatedLine.fileId)
 
-            // Find where the changed line sits. Preceding lines are not re-evaluated;
-            // their variable state is inherited. If not found, fall back to 0 (recalculate all).
-            val changedIndex = allLines.indexOfFirst { it.id == updatedLine.id }.coerceAtLeast(0)
+                // Find where the changed line sits. Preceding lines are not re-evaluated;
+                // their variable state is inherited. If not found, fall back to 0 (recalculate all).
+                val changedIndex = allLines.indexOfFirst { it.id == updatedLine.id }.coerceAtLeast(0)
 
-            // Recalculate only affected lines (from changedIndex onward), inheriting variable
-            // state from the preceding lines without re-evaluating them.
-            val affectedLines = MathEngine.calculateFrom(allLines, changedIndex)
+                // Recalculate only affected lines (from changedIndex onward), inheriting variable
+                // state from the preceding lines without re-evaluating them.
+                val affectedLines = MathEngine.calculateFrom(allLines, changedIndex)
 
-            // Batch-write all updated results in one DB transaction
-            dao.updateLines(updatedLine.fileId, affectedLines)
+                // Batch-write all updated results in one DB transaction
+                dao.updateLines(updatedLine.fileId, affectedLines)
+            }
         }
     }
 
@@ -398,66 +385,78 @@ class CalculatorViewModel(
         }
     }
 
-    fun addLine(fileId: Long, sortOrder: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
-            // Save state for undo
-            saveStateForUndo(fileId)
+    suspend fun addLine(fileId: Long, sortOrder: Int, afterLineId: Long? = null): Long {
+        return withContext(Dispatchers.IO) {
+            calculationMutex.withLock {
+                // Save state for undo
+                saveStateForUndo(fileId)
 
-            val allLines = dao.getLinesForFileSync(fileId)
+                val newLine = LineEntity(fileId = fileId, sortOrder = sortOrder, expression = "", result = "")
+                val newId = dao.moveAndInsertLine(fileId, afterLineId, newLine)
 
-            // Shift all lines after this position down by 1
-            allLines.filter { it.sortOrder >= sortOrder }
-                .sortedByDescending { it.sortOrder }
-                .forEach { line ->
-                    dao.updateLine(line.copy(sortOrder = line.sortOrder + 1))
-                }
+                // Fetch the now-normalized lines
+                val updatedAllLines = dao.getLinesForFileSync(fileId)
 
-            // Insert new line at the specified position
-            dao.insertLine(LineEntity(fileId = fileId, sortOrder = sortOrder, expression = "", result = ""))
+                // Find the actual index of the new line (normalization ensures it matches current index)
+                val insertIndex = updatedAllLines.indexOfFirst { it.id == newId }.coerceAtLeast(0)
 
-            // Recalculate everything from the new line downward
-            val updatedAllLines = dao.getLinesForFileSync(fileId)
-            val affectedLines = MathEngine.calculateFrom(updatedAllLines, sortOrder)
-            dao.updateLines(fileId, affectedLines)
+                // Recalculate everything from the new line downward
+                val affectedLines = MathEngine.calculateFrom(updatedAllLines, insertIndex)
+                dao.updateLines(fileId, affectedLines)
+
+                newId
+            }
         }
     }
 
     fun deleteLine(line: LineEntity) {
         viewModelScope.launch(Dispatchers.IO) {
-            // Save state for undo
-            saveStateForUndo(line.fileId)
+            calculationMutex.withLock {
+                // Save state for undo
+                saveStateForUndo(line.fileId)
 
-            // Delete the line
-            dao.deleteLine(line)
+                // Get current lines to find the actual index before deletion
+                val currentLines = dao.getLinesForFileSync(line.fileId)
+                val deletedIndex = currentLines.indexOfFirst { it.id == line.id }
+                    .let { if (it >= 0) it else line.sortOrder }
 
-            // Shift all lines after this position up by 1
-            val allLines = dao.getLinesForFileSync(line.fileId)
-            allLines.filter { it.sortOrder > line.sortOrder }
-                .sortedBy { it.sortOrder }
-                .forEach { lineToShift ->
-                    dao.updateLine(lineToShift.copy(sortOrder = lineToShift.sortOrder - 1))
+                // Atomically delete line and fix order numbers
+                dao.deleteAndNormalize(line)
+
+                val updatedLines = dao.getLinesForFileSync(line.fileId)
+
+                // Recalculate from the spot where we deleted.
+                // Because we normalized (0, 1, 2...), the line that was below
+                // the deleted one now sits at the deleted line's old position.
+                if (deletedIndex in updatedLines.indices) {
+                    val affectedLines = MathEngine.calculateFrom(updatedLines, deletedIndex)
+                    dao.updateLines(line.fileId, affectedLines)
                 }
-
-            // Recalculate everything from the deleted line's position downward
-            val updatedAllLines = dao.getLinesForFileSync(line.fileId)
-            val affectedLines = MathEngine.calculateFrom(updatedAllLines, line.sortOrder)
-            dao.updateLines(line.fileId, affectedLines)
+            }
         }
     }
 
     // Clear all lines in a file
     fun clearAllLines(fileId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            saveStateForUndo(fileId)
-            dao.clearAllLines(fileId)
+            calculationMutex.withLock {
+                saveStateForUndo(fileId)
+                dao.clearAllLines(fileId)
+            }
         }
     }
 
     fun deleteFile(fileId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            val file = dao.getFileById(fileId)
-            if (file != null) {
-                dao.deleteFile(file)
+            calculationMutex.withLock {
+                val file = dao.getFileById(fileId)
+                if (file != null) {
+                    dao.deleteFile(file)
+                    // Purge history for this file
+                    undoStacks.remove(fileId)
+                    redoStacks.remove(fileId)
+                    updateUndoRedoState(fileId)
+                }
             }
         }
     }
@@ -469,17 +468,23 @@ class CalculatorViewModel(
      */
     suspend fun deleteFileIfEmptyAndRecent(fileId: Long) {
         withContext(Dispatchers.IO) {
-            val file = dao.getFileById(fileId) ?: return@withContext
-            val lines = dao.getLinesForFileSync(fileId)
+            calculationMutex.withLock {
+                val file = dao.getFileById(fileId) ?: return@withLock
+                val lines = dao.getLinesForFileSync(fileId)
 
-            val isEmpty = lines.all { it.expression.isBlank() }
-            val now = System.currentTimeMillis()
-            val isRecent = now - file.createdAt < Constants.EMPTY_FILE_CLEANUP_THRESHOLD_MS
-            val untitledRegex = Regex("""^Untitled(\s\(\d+\))?$""") // Matches "Untitled", "Untitled (1)", "Untitled (2)", etc.
-            val isUntitled = untitledRegex.matches(file.name)
+                val isEmpty = lines.all { it.expression.isBlank() }
+                val now = System.currentTimeMillis()
+                val isRecent = now - file.createdAt < Constants.EMPTY_FILE_CLEANUP_THRESHOLD_MS
+                val untitledRegex = Regex("""^Untitled(\s\(\d+\))?$""") // Matches "Untitled", "Untitled (1)", "Untitled (2)", etc.
+                val isUntitled = untitledRegex.matches(file.name)
 
-            if (isEmpty && isRecent && isUntitled) {
-                dao.deleteFile(file)
+                if (isEmpty && isRecent && isUntitled) {
+                    dao.deleteFile(file)
+                    // Purge history for this file
+                    undoStacks.remove(fileId)
+                    redoStacks.remove(fileId)
+                    updateUndoRedoState(fileId)
+                }
             }
         }
     }
