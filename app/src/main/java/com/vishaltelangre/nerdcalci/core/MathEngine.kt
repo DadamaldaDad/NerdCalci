@@ -22,13 +22,26 @@ object MathEngine {
      * the current block's line results.
      */
     private val DYNAMIC_VARIABLES: Map<String, (List<Double?>) -> Double> = mapOf(
-        "sum"     to ::computeBlockSum,
-        "total"   to ::computeBlockSum,
-        "avg"     to ::computeBlockAverage,
-        "average" to ::computeBlockAverage
+        "sum"      to ::computeBlockSum,
+        "total"    to ::computeBlockSum,
+
+        "avg"      to ::computeBlockAverage,
+        "average"  to ::computeBlockAverage,
+
+        "last"     to ::computePreviousLineResult,
+        "prev"     to ::computePreviousLineResult,
+        "previous" to ::computePreviousLineResult,
+        "above"    to ::computePreviousLineResult,
+        "_"        to ::computePreviousLineResult
     )
 
+    private val RESERVED_DYNAMIC_VARIABLES = TokenKind.entries
+        .filter { it.isPreviousLineAlias }
+        .map { it.display }
+        .toSet()
+
     val dynamicVariableNames: Set<String> get() = DYNAMIC_VARIABLES.keys
+    val reservedVariableNames: Set<String> get() = RESERVED_DYNAMIC_VARIABLES
 
     /**
      * Calculate results for all lines in a file, maintaining variable state across lines.
@@ -248,6 +261,14 @@ object MathEngine {
             count++
         }
         return if (count > 0) sum / count else 0.0
+    }
+
+    /**
+     * Returns the result of the immediately preceding line, or 0.0 if that line
+     * was blank, a comment, or an error.
+     */
+    private fun computePreviousLineResult(lineResults: List<Double?>): Double {
+        return lineResults.lastOrNull() ?: 0.0
     }
 
     /**

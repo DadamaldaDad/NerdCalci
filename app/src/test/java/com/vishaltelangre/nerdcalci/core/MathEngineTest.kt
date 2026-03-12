@@ -1369,6 +1369,124 @@ class MathEngineTest {
     }
 
     @Test
+    fun `last keyword refers to the previous line result`() {
+        val lines = listOf(
+            createLine("10 * 5", sortOrder = 0),
+            createLine("last + 10", sortOrder = 1)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("50.0", result[0].result)
+        assertEquals("60.0", result[1].result)
+    }
+
+    @Test
+    fun `prev keyword refers to the previous line result`() {
+        val lines = listOf(
+            createLine("100 / 4", sortOrder = 0),
+            createLine("prev * 2", sortOrder = 1)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("25.0", result[0].result)
+        assertEquals("50.0", result[1].result)
+    }
+
+    @Test
+    fun `previous keyword refers to the previous line result`() {
+        val lines = listOf(
+            createLine("20 + 30", sortOrder = 0),
+            createLine("previous - 10", sortOrder = 1)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("50.0", result[0].result)
+        assertEquals("40.0", result[1].result)
+    }
+
+    @Test
+    fun `above keyword refers to the previous line result`() {
+        val lines = listOf(
+            createLine("5 ^ 2", sortOrder = 0),
+            createLine("above / 5", sortOrder = 1)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("25.0", result[0].result)
+        assertEquals("5.0", result[1].result)
+    }
+
+    @Test
+    fun `underscore keyword refers to the previous line result`() {
+        val lines = listOf(
+            createLine("42", sortOrder = 0),
+            createLine("_ + 8", sortOrder = 1)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("42.0", result[0].result)
+        assertEquals("50.0", result[1].result)
+    }
+
+    @Test
+    fun `last keyword returns 0 if the preceding line is blank`() {
+        val lines = listOf(
+            createLine("10", sortOrder = 0),
+            createLine("   ", sortOrder = 1),
+            createLine("last + 5", sortOrder = 2)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("5.0", result[2].result)
+    }
+
+    @Test
+    fun `last keyword returns 0 if the preceding line is a comment`() {
+        val lines = listOf(
+            createLine("10", sortOrder = 0),
+            createLine("# comment", sortOrder = 1),
+            createLine("last + 5", sortOrder = 2)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("5.0", result[2].result)
+    }
+
+    @Test
+    fun `last keyword returns 0 if the preceding line resulted in an error`() {
+        val lines = listOf(
+            createLine("10", sortOrder = 0),
+            createLine("{", sortOrder = 1), // Invalid expression
+            createLine("last + 5", sortOrder = 2)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("Err", result[1].result)
+        assertEquals("5.0", result[2].result)
+    }
+
+    @Test
+    fun `last keyword returns 0 on the first line`() {
+        val lines = listOf(
+            createLine("last + 10", sortOrder = 0)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("10.0", result[0].result)
+    }
+
+    @Test
+    fun `last keyword reassignment is blocked`() {
+        val lines = listOf(createLine("last = 10", sortOrder = 0))
+        val result = MathEngine.calculate(lines)
+        assertEquals("Err", result[0].result)
+
+        val err = MathEngine.getErrorDetails(lines, 0)
+        assertEquals("'last' is reserved and cannot be used as a variable", err)
+    }
+
+    @Test
+    fun `compound assignment to underscore is blocked`() {
+        val lines = listOf(createLine("_ += 5", sortOrder = 0))
+        val result = MathEngine.calculate(lines)
+        assertEquals("Err", result[0].result)
+
+        val err = MathEngine.getErrorDetails(lines, 0)
+        assertEquals("'_' is reserved and cannot be used as a variable", err)
+    }
+
+    @Test
     fun `formatDisplayResult formats raw strings correctly`() {
         assertEquals("0.33", MathEngine.formatDisplayResult("0.3333333333333333", 2))
         assertEquals("0.3333", MathEngine.formatDisplayResult("0.3333333333333333", 4))

@@ -1,0 +1,1 @@
+Introduced new keywords (`last`, `prev`, `previous`, `above`, and `_`) that reference the result of the line directly above, or `0` if that line is blank, a comment, or an error.

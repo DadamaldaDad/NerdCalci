@@ -86,7 +86,8 @@ class Parser(private val tokens: List<Token>) {
      * - `2 + 3 * 4`     → none of the above            → ExprStatement
      */
     private fun parseStatement(allowFunctionDef: Boolean = true): Statement {
-        if (peekKind() == TokenKind.IDENTIFIER) {
+        val kind = peekKind()
+        if (kind == TokenKind.IDENTIFIER || kind.isPreviousLineAlias) {
             val name = peek().lexeme
             val position = peek().position
             val nextKind = peekAt(1)
@@ -308,7 +309,8 @@ class Parser(private val tokens: List<Token>) {
      * 3. **Parenthesized groups** — `(2 + 3)` → parse the inner expression
      */
     private fun parsePrimary(): Expr {
-        return when (peekKind()) {
+        val kind = peekKind()
+        return when (kind) {
             TokenKind.NUMBER -> {
                 val numToken = advance()
                 // Check for percentage syntax: 20% of X, 15% off X, or bare 20%
@@ -349,19 +351,22 @@ class Parser(private val tokens: List<Token>) {
                 }
             }
 
-            // e.g. (2 + 3), (price * 1.1)
-            TokenKind.LPAREN -> {
-                advance() // skip past "("
-                val expr = parseExpression()
-                expect(TokenKind.RPAREN) // expect closing ")"
-                expr
-            }
-
             else -> {
-                val token = peek()
-                throw ParseException(
-                    "Expected a value or '(', but found ${token.kind.display}", token.position
-                )
+                if (kind.isPreviousLineAlias) {
+                    val token = advance()
+                    Expr.Variable(token.lexeme)
+                } else if (kind == TokenKind.LPAREN) {
+                    // e.g. (2 + 3), (price * 1.1)
+                    advance() // skip past "("
+                    val expr = parseExpression()
+                    expect(TokenKind.RPAREN) // expect closing ")"
+                    expr
+                } else {
+                    val token = peek()
+                    throw ParseException(
+                        "Expected a value or '(', but found ${token.kind.display}", token.position
+                    )
+                }
             }
         }
     }
@@ -384,7 +389,7 @@ class Parser(private val tokens: List<Token>) {
      * used as variable names. For example, `sin = 5` is an error.
      */
     private fun requireAssignable(name: String, position: Int) {
-        if (Builtins.isBuiltin(name)) {
+        if (Builtins.isBuiltin(name) || MathEngine.reservedVariableNames.contains(name)) {
             throw ParseException("'$name' is reserved and cannot be used as a variable", position)
         }
     }
@@ -396,7 +401,7 @@ class Parser(private val tokens: List<Token>) {
     }
 
     /** Check whether a token kind can start an expression (used for % disambiguation). */
-    private fun canStartExpression(kind: TokenKind): Boolean = kind in setOf(
-        TokenKind.MINUS, TokenKind.NUMBER, TokenKind.LPAREN, TokenKind.IDENTIFIER
-    )
+    private fun canStartExpression(kind: TokenKind): Boolean =
+        kind == TokenKind.MINUS || kind == TokenKind.NUMBER || kind == TokenKind.LPAREN ||
+                kind == TokenKind.IDENTIFIER || kind.isPreviousLineAlias
 }
