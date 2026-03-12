@@ -1,0 +1,1 @@
+Added support to swipe left on any file to quickly delete it, with an undo option.

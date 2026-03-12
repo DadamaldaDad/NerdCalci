@@ -5,9 +5,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vishaltelangre.nerdcalci.core.Constants
@@ -24,10 +21,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+
+sealed class HomeUiEvent {
+    data class ShowMessage(val message: String) : HomeUiEvent()
+}
 
 data class FileSnapshot(
     val lines: List<LineEntity>
@@ -48,7 +53,6 @@ class CalculatorViewModel(
         private const val DEFAULT_THEME = "system"
     }
 
-    // Theme state - load saved preference or default to "system"
     private val _currentTheme = MutableStateFlow(
         prefs?.getString(PREF_THEME, DEFAULT_THEME) ?: DEFAULT_THEME
     )
@@ -104,7 +108,6 @@ class CalculatorViewModel(
 
     fun setTheme(theme: String) {
         _currentTheme.value = theme
-        // Persist theme preference
         prefs?.edit()?.putString(PREF_THEME, theme)?.apply()
     }
 
@@ -174,19 +177,23 @@ class CalculatorViewModel(
         return result
     }
 
-    // Undo/Redo stacks with max limit per file
     private val undoStacks = mutableMapOf<Long, MutableList<FileSnapshot>>()
     private val redoStacks = mutableMapOf<Long, MutableList<FileSnapshot>>()
     private val maxHistorySize = Constants.MAX_HISTORY_SIZE
 
-    // State flows to notify UI about undo/redo availability
     private val _canUndo = MutableStateFlow<Map<Long, Boolean>>(emptyMap())
     val canUndo: StateFlow<Map<Long, Boolean>> = _canUndo
 
     private val _canRedo = MutableStateFlow<Map<Long, Boolean>>(emptyMap())
     val canRedo: StateFlow<Map<Long, Boolean>> = _canRedo
 
-    val allFiles = dao.getAllFiles()
+    private val _excludedFileIds = MutableStateFlow<Set<Long>>(emptySet())
+    val excludedFileIds: StateFlow<Set<Long>> = _excludedFileIds.asStateFlow()
+
+    private val _uiEvents = MutableSharedFlow<HomeUiEvent>()
+    val uiEvents = _uiEvents.asSharedFlow()
+
+    val allFiles: Flow<List<FileEntity>> = dao.getAllFiles()
 
     fun getLines(fileId: Long): Flow<List<LineEntity>> = dao.getLinesForFile(fileId)
 
@@ -194,32 +201,23 @@ class CalculatorViewModel(
         dao.getLineCountForFile(fileId)
     }
 
-    // Update undo/redo availability for a file
     private fun updateUndoRedoState(fileId: Long) {
         _canUndo.value = _canUndo.value + (fileId to (undoStacks[fileId]?.isNotEmpty() == true))
         _canRedo.value = _canRedo.value + (fileId to (redoStacks[fileId]?.isNotEmpty() == true))
     }
 
-    // Save current state before making changes (used for undo/redo)
     private suspend fun saveStateForUndo(fileId: Long) {
         val currentLines = dao.getLinesForFileSync(fileId)
         val snapshot = FileSnapshot(currentLines.map { it.copy() })
-
         val undoStack = undoStacks.getOrPut(fileId) { mutableListOf() }
         undoStack.add(snapshot)
-
-        // Limit stack size
         if (undoStack.size > maxHistorySize) {
             undoStack.removeAt(0)
         }
-
-        // Clear redo stack when new action is performed
         redoStacks[fileId]?.clear()
-
         updateUndoRedoState(fileId)
     }
 
-    // Undo last action
     fun undo(fileId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             calculationMutex.withLock {
@@ -241,7 +239,6 @@ class CalculatorViewModel(
         }
     }
 
-    // Redo last undone action
     fun redo(fileId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             calculationMutex.withLock {
@@ -263,7 +260,6 @@ class CalculatorViewModel(
         }
     }
 
-    // Restore a snapshot with minimal UI flashing
     private suspend fun restoreSnapshot(fileId: Long, snapshot: FileSnapshot) {
         dao.restoreLines(fileId, snapshot.lines)
 
@@ -273,7 +269,6 @@ class CalculatorViewModel(
         dao.updateLines(fileId, calculatedLines)
     }
 
-    // Clear undo/redo history for a file
     fun clearHistory(fileId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             calculationMutex.withLock {
@@ -304,19 +299,10 @@ class CalculatorViewModel(
         }
     }
 
-    // Determine if result should be shown based on expression complexity
     private fun shouldShowResult(expression: String): Boolean {
-        // Check if expression has operators (indicating computation)
         val hasOperators = expression.any { it in "+-*/%^" }
-
-        // Check if it's a simple assignment like "a = 5"
         val simpleAssignmentRegex = Regex("""^\s*[a-zA-Z][a-zA-Z0-9\s]*\s*=\s*[\d.]+\s*$""")
-        if (simpleAssignmentRegex.matches(expression)) {
-            // For "a = 5", result is "5", no need to show result
-            return false
-        }
-
-        // If there are operators or it's a variable reference, show result
+        if (simpleAssignmentRegex.matches(expression)) return false
         return hasOperators || !expression.contains("=")
     }
 
@@ -344,43 +330,26 @@ class CalculatorViewModel(
         }
     }
 
-    /**
-     * Get the exact error message for a specific line by re-evaluating it on demand.
-     */
     suspend fun getLineErrorMessage(fileId: Long, targetLineId: Long): String? {
         return withContext(Dispatchers.IO) {
             val allLines = dao.getLinesForFileSync(fileId)
             val targetIndex = allLines.indexOfFirst { it.id == targetLineId }
-            if (targetIndex != -1) {
-                MathEngine.getErrorDetails(allLines, targetIndex)
-            } else {
-                null
-            }
+            if (targetIndex != -1) MathEngine.getErrorDetails(allLines, targetIndex) else null
         }
     }
 
-
-
-    // Create a new file with a default "Untitled" name
     fun createNewFile(onCreated: (Long) -> Unit = {}) {
         viewModelScope.launch(Dispatchers.IO) {
             val fileId = dao.createNewFile("Untitled", System.currentTimeMillis())
-            // Notify callback with new file ID on main thread
-            withContext(Dispatchers.Main) {
-                onCreated(fileId)
-            }
+            withContext(Dispatchers.Main) { onCreated(fileId) }
         }
     }
 
-    // Duplicate an existing file with all its lines
     fun duplicateFile(sourceFileId: Long, onCreated: (Long) -> Unit = {}) {
         viewModelScope.launch(Dispatchers.IO) {
             val fileId = dao.duplicateFile(sourceFileId, System.currentTimeMillis())
             if (fileId != null) {
-                // Notify callback with new file ID on main thread
-                withContext(Dispatchers.Main) {
-                    onCreated(fileId)
-                }
+                withContext(Dispatchers.Main) { onCreated(fileId) }
             }
         }
     }
@@ -436,7 +405,6 @@ class CalculatorViewModel(
         }
     }
 
-    // Clear all lines in a file
     fun clearAllLines(fileId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             calculationMutex.withLock {
@@ -457,6 +425,43 @@ class CalculatorViewModel(
                     redoStacks.remove(fileId)
                     updateUndoRedoState(fileId)
                 }
+                _excludedFileIds.value = _excludedFileIds.value - fileId
+            }
+        }
+    }
+
+    fun hideFile(fileId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            calculationMutex.withLock {
+                if (!_excludedFileIds.value.contains(fileId)) {
+                    _excludedFileIds.value = _excludedFileIds.value + fileId
+                }
+            }
+        }
+    }
+
+    fun undoHideFile(fileId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            calculationMutex.withLock {
+                _excludedFileIds.value = _excludedFileIds.value - fileId
+            }
+        }
+    }
+
+    fun permanentDeleteExclusions() {
+        viewModelScope.launch(Dispatchers.IO) {
+            calculationMutex.withLock {
+                val idsToDelete = _excludedFileIds.value
+                if (idsToDelete.isEmpty()) return@withLock
+                idsToDelete.forEach { fileId ->
+                    val file = dao.getFileById(fileId)
+                    if (file != null) {
+                        dao.deleteFile(file)
+                        undoStacks.remove(fileId)
+                        redoStacks.remove(fileId)
+                    }
+                }
+                _excludedFileIds.value = _excludedFileIds.value - idsToDelete
             }
         }
     }
@@ -503,10 +508,7 @@ class CalculatorViewModel(
             if (finalName.isBlank()) return@withContext false
 
             // Check if name is taken by another file
-            if (dao.doesFileExist(finalName, fileId)) {
-                return@withContext false
-            }
-
+            if (dao.doesFileExist(finalName, fileId)) return@withContext false
             val file = dao.getFileById(fileId)
             if (file != null) {
                 dao.updateFile(file.copy(name = finalName))
@@ -519,55 +521,42 @@ class CalculatorViewModel(
 
     suspend fun doesFileExist(name: String, excludeId: Long? = null): Boolean {
         return withContext(Dispatchers.IO) {
-            if (excludeId == null) {
-                dao.doesFileExist(name)
-            } else {
-                dao.doesFileExist(name, excludeId)
-            }
+            if (excludeId == null) dao.doesFileExist(name) else dao.doesFileExist(name, excludeId)
         }
     }
 
-    // Toggle pin status for a file
-    fun togglePinFile(fileId: Long, onMaxPinnedReached: () -> Unit = {}) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val file = dao.getFileById(fileId)
+    fun togglePinFile(fileId: Long) {
+        viewModelScope.launch {
+            val file = withContext(Dispatchers.IO) { dao.getFileById(fileId) }
             if (file != null) {
-                // If trying to pin and already at max, notify user
                 if (!file.isPinned) {
-                    val pinnedCount = dao.getPinnedFilesCount()
+                    val pinnedCount = withContext(Dispatchers.IO) { dao.getPinnedFilesCount() }
                     if (pinnedCount >= Constants.MAX_PINNED_FILES) {
-                        withContext(Dispatchers.Main) {
-                            onMaxPinnedReached()
-                        }
+                        _uiEvents.emit(HomeUiEvent.ShowMessage("Maximum ${Constants.MAX_PINNED_FILES} files can be pinned"))
                         return@launch
                     }
                 }
-                dao.updateFile(file.copy(isPinned = !file.isPinned))
+                withContext(Dispatchers.IO) {
+                    dao.updateFile(file.copy(isPinned = !file.isPinned))
+                }
             }
         }
     }
 
-    // Export all files to ZIP
     suspend fun exportAllFiles(context: Context, outputUri: Uri): Result<String> {
         return BackupManager.exportAllFiles(context, dao, outputUri)
     }
 
-    // Import files from ZIP
     suspend fun importFiles(context: Context, inputUri: Uri): Result<String> {
         return BackupManager.importFiles(context, dao, inputUri)
     }
 
-    // Copy current file to clipboard with results
     suspend fun copyFileToClipboard(context: Context, fileId: Long): Result<String> {
         return withContext(Dispatchers.IO) {
             try {
                 val lines = dao.getLinesForFileSync(fileId)
                 val content = formatFileContent(lines, precision.value)
-
-                withContext(Dispatchers.Main) {
-                    copyToClipboard(context, content, "NerdCalci File")
-                }
-
+                withContext(Dispatchers.Main) { copyToClipboard(context, content, "NerdCalci File") }
                 Result.success("Copied to clipboard")
             } catch (e: Exception) {
                 Result.failure(e)
