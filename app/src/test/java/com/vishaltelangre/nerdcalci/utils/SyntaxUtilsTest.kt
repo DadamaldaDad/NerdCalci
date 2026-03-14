@@ -437,4 +437,101 @@ class SyntaxUtilsTest {
         val result = tokens("sum(1, 2)")
         assertEquals(TokenType.Keyword, result[0].type)
     }
+
+    @Test
+    fun `getIdentifierRangeAt finds full word from middle`() {
+        val text = "  log(10)  "
+        // Cursor at 'o' (index 3)
+        val range = text.getIdentifierRangeAt(3)
+        assertEquals(2 until 5, range)
+        assertEquals("log", text.substring(range))
+    }
+
+    @Test
+    fun `getIdentifierRangeAt finds word from start`() {
+        val text = "log(10)"
+        val range = text.getIdentifierRangeAt(0)
+        assertEquals(0 until 3, range)
+    }
+
+    @Test
+    fun `getIdentifierRangeAt finds word from end bound`() {
+        val text = "log(10)"
+        // index 3 is '(', which is not part of identifier but we should find 'log' if index is 3
+        val range = text.getIdentifierRangeAt(3)
+        assertEquals(0 until 3, range)
+    }
+
+    @Test
+    fun `getIdentifierRangeAt handles empty or non-word correctly`() {
+        val text = " + "
+        val range = text.getIdentifierRangeAt(1)
+        assertEquals(1 until 1, range)
+    }
+
+    @Test
+    fun `findClosingParenthesis matches simple parens`() {
+        val text = "log(10)"
+        assertEquals(6, text.findClosingParenthesis(3))
+    }
+
+    @Test
+    fun `findClosingParenthesis handles nested parens`() {
+        val text = "pow(2, log(100))"
+        assertEquals(15, text.findClosingParenthesis(3))
+        assertEquals(14, text.findClosingParenthesis(10))
+    }
+
+    @Test
+    fun `calculateFuzzyMatch finds exact matches`() {
+        val result = "abc".calculateFuzzyMatch("abc")
+        assertTrue(result != null)
+        // 1000 (exact) + 100 (first char) + 70 (consecutive) - 3 (length) = 1167
+        assertEquals(1167, result?.score)
+    }
+
+    @Test
+    fun `calculateFuzzyMatch finds subsequence matches`() {
+        val result = "lineno".calculateFuzzyMatch("ln")
+        assertTrue(result != null)
+        // 'l' at 0, 'n' at 2
+        assertEquals(listOf(0, 2), result?.matchIndices)
+    }
+
+    @Test
+    fun `calculateFuzzyMatch respects word boundaries`() {
+        val target = "currentLineNumber"
+        val result = target.calculateFuzzyMatch("cln")
+        assertTrue(result != null)
+        // 'c' at 0 (+100 first char)
+        // 'L' at 7 (+50 boundary)
+        // 'n' at 9 (NOT a boundary, greedily matched before 'N' at 11)
+        // score = 100 + 50 - 17 = 133
+        assertEquals(133, result?.score)
+    }
+
+    @Test
+    fun `calculateFuzzyMatch returns null if no match`() {
+        val result = "abc".calculateFuzzyMatch("xyz")
+        assertTrue(result == null)
+    }
+
+    @Test
+    fun `calculateFuzzyMatch applies type-based bonuses`() {
+        val query = "s"
+        
+        // Local variable score
+        val varScore = "split".calculateFuzzyMatch(query, SuggestionType.VARIABLE)?.score ?: 0
+        // Global function score
+        val funcScore = "sin".calculateFuzzyMatch(query, SuggestionType.GLOBAL_FUNCTION)?.score ?: 0
+        
+        // "split" is longer than "sin", so without bonus "sin" would win.
+        // But with +200 bonus, "split" should win.
+        assertTrue("Variable 'split' ($varScore) should outrank Function 'sin' ($funcScore)", varScore > funcScore)
+        
+        // Dynamic variable vs Global function
+        val dynamicScore = "sum".calculateFuzzyMatch(query, SuggestionType.DYNAMIC_VARIABLE)?.score ?: 0
+        assertTrue("Dynamic 'sum' ($dynamicScore) should outrank Global 'sin' ($funcScore)", dynamicScore > funcScore)
+        assertTrue("Variable 'split' ($varScore) should outrank Dynamic 'sum' ($dynamicScore)", varScore > dynamicScore)
+    }
 }

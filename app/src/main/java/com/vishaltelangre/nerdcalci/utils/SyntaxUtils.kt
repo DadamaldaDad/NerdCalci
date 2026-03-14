@@ -15,8 +15,7 @@ object SyntaxUtils {
     )
 
     /**
-     * Parses the given text and returns a sequence of syntax tokens indicating the type of each
-     * segment. This parser can be reused across different rendering systems (Compose, Canvas, etc).
+     * Parses the text into syntax tokens.
      */
     fun parseSyntaxTokens(text: String): List<SyntaxToken> {
         val tokens = mutableListOf<SyntaxToken>()
@@ -72,4 +71,129 @@ object SyntaxUtils {
         }
         return tokens
     }
+}
+/**
+ * Returns the range of the identifier at the given index.
+ * Matches the definition of an identifier in [com.vishaltelangre.nerdcalci.core.Lexer].
+ */
+fun String.getIdentifierRangeAt(index: Int): IntRange {
+    var start = index
+    // Walk back until we hit a non-identifier character
+    while (start > 0 && (this[start - 1].isLetterOrDigit() || this[start - 1] == '_')) {
+        start--
+    }
+
+    var end = index
+    // Walk forward until we hit a non-identifier character
+    while (end < this.length && (this[end].isLetterOrDigit() || this[end] == '_')) {
+        end++
+    }
+    return start until end
+}
+
+/**
+ * If the character at [index] is '(', find the matching ')'.
+ * Returns the index of ')' or the last character index if no match is found.
+ */
+fun String.findClosingParenthesis(index: Int): Int {
+    if (index >= length || this[index] != '(') return index
+    var balance = 0
+    for (i in index until length) {
+        if (this[i] == '(') balance++
+        else if (this[i] == ')') balance--
+        if (balance == 0) return i
+    }
+    return length - 1
+}
+
+/**
+ * Result of a fuzzy match calculation.
+ */
+data class FuzzyMatch(
+    val score: Int,
+    val matchIndices: List<Int>
+)
+
+/**
+ * Calculates a fuzzy match score and matched indices using common heuristics.
+ *
+ * Scoring Rules:
+ * - Exact matches get the highest bonus (+1000).
+ * - Prefix matches get a significant bonus (+500).
+ * - Starting character match bonus (+100).
+ * - Consecutive characters get exponentially increasing bonuses (20 + 10 * consecutiveCount)
+ * - Matches on word boundaries (snake_case, camelCase) get a bonus (+50).
+ * - Shorter overall strings are prioritized.
+ * - Type-based bonuses are applied to favor local variables/functions.
+ *
+ * Returns null if the query is not a subsequence of the target.
+ */
+fun String.calculateFuzzyMatch(query: String, type: SuggestionType? = null): FuzzyMatch? {
+    if (query.isEmpty()) return FuzzyMatch(0, emptyList())
+
+    val queryLower = query.lowercase()
+    val targetLower = this.lowercase()
+
+    // Find all characters of the query in the target string in order
+    val matchIndices = mutableListOf<Int>()
+    var queryIdx = 0
+    var targetIdx = 0
+
+    while (queryIdx < queryLower.length && targetIdx < targetLower.length) {
+        if (queryLower[queryIdx] == targetLower[targetIdx]) {
+            matchIndices.add(targetIdx)
+            queryIdx++
+        }
+        targetIdx++
+    }
+
+    // If we didn't find all characters, it's not a match
+    if (queryIdx != queryLower.length) return null
+
+    var score = 0
+
+    // Exact matches are top priority
+    if (queryLower == targetLower) score += 1000
+    // Prefix matches are high priority
+    else if (targetLower.startsWith(queryLower)) score += 500
+
+    // Bonus for matching the very first character of the target
+    if (matchIndices.isNotEmpty() && matchIndices.first() == 0) score += 100
+
+    // Consecutive characters bonus
+    var consecutiveCount = 0
+    for (i in 1 until matchIndices.size) {
+        if (matchIndices[i] == matchIndices[i - 1] + 1) {
+            consecutiveCount++
+            score += 20 + (consecutiveCount * 10)
+        } else {
+            consecutiveCount = 0
+        }
+    }
+
+    // Word boundary bonuses. Helps matching snake_case or camelCase variables
+    for (idx in matchIndices) {
+        if (idx > 0) {
+            val prevChar = this[idx - 1]
+            val currChar = this[idx]
+            // Boundary if preceded by underscore, space, or if it transitions from lower to upper case
+            if (prevChar == '_' || prevChar == ' ' || (prevChar.isLowerCase() && currChar.isUpperCase())) {
+                score += 50
+            }
+        }
+    }
+
+    // Shorter targets are better when multiple targets have the same match quality
+    score -= this.length
+
+    // Apply prioritization bonus based on type
+    if (type != null) {
+        score += when (type) {
+            SuggestionType.VARIABLE, SuggestionType.LOCAL_FUNCTION -> 200
+            SuggestionType.DYNAMIC_VARIABLE -> 100
+            else -> 0
+        }
+    }
+
+    return FuzzyMatch(score, matchIndices)
 }
