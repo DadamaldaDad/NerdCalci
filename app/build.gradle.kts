@@ -11,14 +11,26 @@ android {
     defaultConfig {
         applicationId = "com.vishaltelangre.nerdcalci"
         minSdk = 23
-        versionCode = 301
-        versionName = "3.0.1"
+        versionCode = 310
+        versionName = "3.1.0"
 
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ksp {
             arg("room.schemaLocation", "$projectDir/schemas")
+        }
+
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+        unitTests.all {
+            it.testLogging {
+                showStandardStreams = true
+                events("passed", "skipped", "failed", "standardOut", "standardError")
+                exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            }
         }
     }
 
@@ -79,6 +91,8 @@ dependencies {
     implementation("io.noties.markwon:ext-tables:4.6.2")
 
     testImplementation(libs.junit)
+    implementation(libs.json)
+    testImplementation("io.mockk:mockk:1.13.8")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

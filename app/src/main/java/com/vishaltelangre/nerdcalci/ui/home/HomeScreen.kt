@@ -34,8 +34,10 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.getValue
@@ -99,7 +101,7 @@ fun HomeScreen(
     val appName = context.getString(R.string.app_name)
 
     fun createFile() {
-        viewModel.createNewFile { fileId ->
+        viewModel.createNewFile(context) { fileId ->
             onFileClick(fileId)
         }
     }
@@ -107,10 +109,14 @@ fun HomeScreen(
     // Handle UI events like Undo Snackbars and other messages
     val excludedFileIds by viewModel.excludedFileIds.collectAsState(initial = emptySet())
 
+    val syncEnabled by viewModel.syncEnabled.collectAsState()
+    val isSyncing by viewModel.isSyncing.collectAsState()
+    val lastSyncAt by viewModel.lastSyncAt.collectAsState()
+
     // Cleanup "Deleted" items when the user interact with the list or navigates away
     DisposableEffect(Unit) {
         onDispose {
-            viewModel.permanentDeleteExclusions()
+            viewModel.permanentDeleteExclusions(context)
         }
     }
 
@@ -141,6 +147,18 @@ fun HomeScreen(
                     }
                 },
                 actions = {
+                    if (syncEnabled) {
+                        IconButton(
+                            onClick = { viewModel.syncFiles(context) },
+                            enabled = !isSyncing
+                        ) {
+                            Icon(
+                                Icons.Default.Sync,
+                                contentDescription = "Sync files",
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
                     IconButton(
                         onClick = onSearchClick,
                         enabled = files.isNotEmpty()
@@ -267,47 +285,113 @@ fun HomeScreen(
                     .fillMaxSize()
                     .padding(padding)
             ) {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 96.dp)
-                ) {
-                    if (visiblePinnedFiles.isNotEmpty()) {
-                        item { SectionHeader(title = "Pinned") }
-                        addDismissibleFileItems(
-                            files = visiblePinnedFiles,
-                            excludedIds = excludedFileIds,
-                            onFileClick = onFileClick,
-                            onRename = { id, name -> coroutineScope.launch { viewModel.renameFile(id, name) } },
-                            onDuplicate = { id -> viewModel.duplicateFile(id) { onFileClick(it) } },
-                            onDelete = { id -> viewModel.deleteFile(id) },
-                            onTogglePin = { id -> viewModel.togglePinFile(id) },
-                            onUndo = { viewModel.undoHideFile(it) },
-                            onDismiss = { viewModel.hideFile(it) },
-                            viewModel = viewModel
+                if (syncEnabled) {
+                    PullToRefreshBox(
+                        isRefreshing = isSyncing,
+                        onRefresh = { viewModel.syncFiles(context) },
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        HomeFileList(
+                            visiblePinnedFiles = visiblePinnedFiles,
+                            visibleUnpinnedFiles = visibleUnpinnedFiles,
+                            excludedFileIds = excludedFileIds,
+                onFileClick = onFileClick,
+                coroutineScope = coroutineScope,
+                snackbarHostState = snackbarHostState,
+                context = context,
+                viewModel = viewModel
                         )
                     }
-
-                    if (visibleUnpinnedFiles.isNotEmpty()) {
-                        item {
-                            SectionHeader(
-                                title = if (visiblePinnedFiles.isNotEmpty()) "All files" else "Files"
-                            )
-                        }
-                        addDismissibleFileItems(
-                            files = visibleUnpinnedFiles,
-                            excludedIds = excludedFileIds,
-                            onFileClick = onFileClick,
-                            onRename = { id, name -> coroutineScope.launch { viewModel.renameFile(id, name) } },
-                            onDuplicate = { id -> viewModel.duplicateFile(id) { onFileClick(it) } },
-                            onDelete = { id -> viewModel.deleteFile(id) },
-                            onTogglePin = { id -> viewModel.togglePinFile(id) },
-                            onUndo = { viewModel.undoHideFile(it) },
-                            onDismiss = { viewModel.hideFile(it) },
-                            viewModel = viewModel
-                        )
-                    }
+                } else {
+                    HomeFileList(
+                        visiblePinnedFiles = visiblePinnedFiles,
+                        visibleUnpinnedFiles = visibleUnpinnedFiles,
+                        excludedFileIds = excludedFileIds,
+                onFileClick = onFileClick,
+                coroutineScope = coroutineScope,
+                snackbarHostState = snackbarHostState,
+                context = context,
+                viewModel = viewModel
+                    )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun HomeFileList(
+    visiblePinnedFiles: List<FileEntity>,
+    visibleUnpinnedFiles: List<FileEntity>,
+    excludedFileIds: Set<Long>,
+    onFileClick: (Long) -> Unit,
+    coroutineScope: CoroutineScope,
+    snackbarHostState: SnackbarHostState,
+    context: android.content.Context,
+    viewModel: CalculatorViewModel
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 96.dp)
+    ) {
+        if (visiblePinnedFiles.isNotEmpty()) {
+            item { SectionHeader(title = "Pinned") }
+            addDismissibleFileItems(
+                files = visiblePinnedFiles,
+                excludedIds = excludedFileIds,
+                onFileClick = onFileClick,
+                onRename = { id, name ->
+                    coroutineScope.launch {
+                        if (!viewModel.renameFile(context, id, name)) {
+                            snackbarHostState.showSnackbar("Failed to rename file")
+                        }
+                    }
+                },
+                onDuplicate = { id -> viewModel.duplicateFile(id) { onFileClick(it) } },
+                onDelete = { id ->
+                    coroutineScope.launch {
+                        if (!viewModel.deleteFile(context, id)) {
+                            snackbarHostState.showSnackbar("Failed to delete file")
+                        }
+                    }
+                },
+                onTogglePin = { id -> viewModel.togglePinFile(id) },
+                onUndo = { viewModel.undoHideFile(it) },
+                onDismiss = { viewModel.hideFile(it) },
+                viewModel = viewModel
+            )
+        }
+
+        if (visibleUnpinnedFiles.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = if (visiblePinnedFiles.isNotEmpty()) "All files" else "Files"
+                )
+            }
+            addDismissibleFileItems(
+                files = visibleUnpinnedFiles,
+                excludedIds = excludedFileIds,
+                onFileClick = onFileClick,
+                onRename = { id, name ->
+                    coroutineScope.launch {
+                        if (!viewModel.renameFile(context, id, name)) {
+                            snackbarHostState.showSnackbar("Failed to rename file")
+                        }
+                    }
+                },
+                onDuplicate = { id -> viewModel.duplicateFile(id) { onFileClick(it) } },
+                onDelete = { id ->
+                    coroutineScope.launch {
+                        if (!viewModel.deleteFile(context, id)) {
+                            snackbarHostState.showSnackbar("Failed to delete file")
+                        }
+                    }
+                },
+                onTogglePin = { id -> viewModel.togglePinFile(id) },
+                onUndo = { viewModel.undoHideFile(it) },
+                onDismiss = { viewModel.hideFile(it) },
+                viewModel = viewModel
+            )
         }
     }
 }

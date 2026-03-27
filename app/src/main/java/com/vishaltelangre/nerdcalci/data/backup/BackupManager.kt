@@ -12,7 +12,11 @@ import com.vishaltelangre.nerdcalci.core.MathContext
 import com.vishaltelangre.nerdcalci.data.local.CalculatorDao
 import com.vishaltelangre.nerdcalci.data.local.entities.FileEntity
 import com.vishaltelangre.nerdcalci.data.local.entities.LineEntity
+import com.vishaltelangre.nerdcalci.data.sync.SyncManager
 import com.vishaltelangre.nerdcalci.utils.FilenameUtils
+import com.vishaltelangre.nerdcalci.utils.FileUtils
+import com.vishaltelangre.nerdcalci.utils.FileMetadata
+import com.vishaltelangre.nerdcalci.utils.ParsedFileContent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -148,15 +152,15 @@ object BackupManager {
     ): Result<RestoreResult> {
         return withContext(Dispatchers.IO) {
             try {
-                val stats = importFromZip(dao, {
+                val stats = importFromZip(context, dao, {
                     context.contentResolver.openInputStream(inputUri)
                         ?: throw Exception("Could not open input stream")
                 }, onProgress, onConflict)
 
-                Log.d(TAG, "Imported ${stats.processedCount} file(s), ${stats.overwrittenCount} overwritten from ${inputUri.lastPathSegment}")
+                Log.d(TAG, "Imported ${stats.processedCount} file(s), ${stats.overwrittenCount} overwritten from ${FileUtils.formatPathForDisplay(inputUri.lastPathSegment ?: "")}")
                 Result.success(stats)
             } catch (e: Exception) {
-                Log.e(TAG, "Import failed from ${inputUri.lastPathSegment}", e)
+                Log.e(TAG, "Import failed from ${FileUtils.formatPathForDisplay(inputUri.lastPathSegment ?: "")}", e)
                 Result.failure(e)
             }
         }
@@ -227,12 +231,12 @@ object BackupManager {
                 Log.d(TAG, "Restoring from backup: ${backup.displayName}")
                 val stats = when (backup.source) {
                     BackupSource.APP_STORAGE -> {
-                        importFromZip(dao, { FileInputStream(File(backup.pathOrUri)) }, onProgress, onConflict)
+                        importFromZip(context, dao, { FileInputStream(File(backup.pathOrUri)) }, onProgress, onConflict)
                     }
 
                     BackupSource.CUSTOM_FOLDER -> {
                         val uri = Uri.parse(backup.pathOrUri)
-                        importFromZip(dao, {
+                        importFromZip(context, dao, {
                             context.contentResolver.openInputStream(uri)
                                 ?: throw Exception("Could not open backup file")
                         }, onProgress, onConflict)
@@ -375,7 +379,19 @@ object BackupManager {
             val precision = prefs(context).getInt("precision", Constants.DEFAULT_PRECISION)
             filesList.forEach { file ->
                 val lines = dao.getLinesForFileSync(file.id)
-                val content = formatFileContent(lines, precision)
+                val body = FileUtils.formatFileBody(lines, precision)
+                val contentHash = FileUtils.calculateHash(body)
+                val content = FileUtils.formatFileContent(
+                    lines = lines,
+                    precision = precision,
+                    metadata = FileMetadata(
+                        id = file.syncId,
+                        isPinned = file.isPinned,
+                        lastModified = file.lastModified,
+                        createdAt = file.createdAt,
+                        contentHash = contentHash
+                    )
+                )
 
                 val entry = ZipEntry("${file.name}${Constants.EXPORT_FILE_EXTENSION}")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -396,6 +412,7 @@ object BackupManager {
     }
 
     internal suspend fun importFromZip(
+        context: Context,
         dao: CalculatorDao,
         streamSupplier: () -> InputStream,
         onProgress: suspend (current: Int, total: Int, fileName: String) -> Unit,
@@ -462,23 +479,9 @@ object BackupManager {
 
                             val content = BufferedReader(InputStreamReader(zipIn)).readText()
 
-                            val expressions = content.lines()
-                                .map { line ->
-                                    val lastHashIndex = line.lastIndexOf('#')
-                                    if (lastHashIndex > 0) {
-                                        val exprCandidate = line.substring(0, lastHashIndex).trim()
-                                        val potentialResult = line.substring(lastHashIndex + 1).trim()
-                                        val isResult = potentialResult == "Err" || potentialResult.toDoubleOrNull() != null
-
-                                        if (isResult && shouldShowResult(exprCandidate)) {
-                                            exprCandidate
-                                        } else {
-                                            line.trim()
-                                        }
-                                    } else {
-                                        line.trim()
-                                    }
-                                }
+                             val parsed = FileUtils.parseFileContent(content)
+                             val expressions = parsed.expressions
+                             val metadata = parsed.metadata
 
                             var isOverwrite = false
                             val finalFileName = if (existingNames.contains(fileName)) {
@@ -518,34 +521,52 @@ object BackupManager {
                                 fileName
                             }
 
-                            val modifiedTime = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            val entryModifiedTime = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                                 entry.lastModifiedTime?.toMillis() ?: entry.time
                             } else {
                                 entry.time
                             }
-                            val createTime = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                entry.creationTime?.toMillis() ?: modifiedTime
+                            val entryCreatedTime = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                entry.creationTime?.toMillis() ?: -1L
                             } else {
-                                modifiedTime
+                                -1L
                             }
 
-                    // ZipEntry.time defaults to -1 if no time info is present.
-                    // We only use System.currentTimeMillis() as a final fallback.
-                            val finalModifiedTime = if (modifiedTime != -1L) modifiedTime else System.currentTimeMillis()
-                            val finalCreateTime = if (createTime != -1L) createTime else finalModifiedTime
+                            val isSyncEnabled = SyncManager.prefs(context).getBoolean(SyncManager.PREF_SYNC_ENABLED, false)
 
+                            // Priority: Sync-enabled (force now) -> embedded metadata -> ZIP entry time -> System.currentTimeMillis()
+                            val finalModifiedTime = if (isSyncEnabled) {
+                                System.currentTimeMillis()
+                            } else {
+                                when {
+                                    metadata.lastModified != -1L -> metadata.lastModified
+                                    entryModifiedTime != -1L -> entryModifiedTime
+                                    else -> System.currentTimeMillis()
+                                }
+                            }
+                            // Priority: embedded metadata -> ZIP creation time fallback -> finalModifiedTime fallback
+                            val finalCreateTime = when {
+                                metadata.createdAt != -1L -> metadata.createdAt
+                                entryCreatedTime != -1L -> entryCreatedTime
+                                else -> finalModifiedTime
+                            }
+
+                            val syncId = metadata.id ?: java.util.UUID.randomUUID().toString()
                             val fileId = dao.insertFile(
                                 FileEntity(
                                     name = finalFileName,
                                     lastModified = finalModifiedTime,
-                                    createdAt = finalCreateTime
+                                    createdAt = finalCreateTime,
+                                    isPinned = metadata.isPinned,
+                                    syncId = syncId
                                 )
                             )
                             currentInsertedFile = FileEntity(
                                 id = fileId,
                                 name = finalFileName,
                                 lastModified = finalModifiedTime,
-                                createdAt = finalCreateTime
+                                createdAt = finalCreateTime,
+                                syncId = syncId
                             )
                             insertedFiles.add(currentInsertedFile)
                             existingNames.add(finalFileName)
@@ -567,12 +588,12 @@ object BackupManager {
                     // Final touch to ensure the timestamp is exactly as intended,
                     // even after updateLines might have moved it to "now".
                             dao.touchFile(fileId, finalModifiedTime)
-                            
+
                             if (fileToDelete != null) {
                                 dao.deleteFile(fileToDelete)
                                 dao.renameFile(fileId, fileName)
                             }
-                            
+
                             currentInsertedFile?.let { insertedFiles.remove(it) }
                         }
 
@@ -592,29 +613,6 @@ object BackupManager {
         return RestoreResult(addedCount + overwrittenCount + skippedCount, overwrittenCount, skippedCount, addedCount)
     }
 
-    private fun formatFileContent(lines: List<LineEntity>, precision: Int): String {
-        return lines.joinToString("\n") { line ->
-            val expr = line.expression.trim()
-            val rawResult = line.result.trim()
-            val displayResult = MathEngine.formatDisplayResult(rawResult, precision)
-
-            when {
-                expr.isEmpty() || rawResult.isBlank() || rawResult == "Err" -> expr
-                expr.trimStart().startsWith("#") -> expr
-                shouldShowResult(expr) -> "$expr # $displayResult"
-                else -> expr
-            }
-        }
-    }
-
-    private fun shouldShowResult(expression: String): Boolean {
-        val hasOperators = expression.any { it in "+-*/%^" }
-        val simpleAssignmentRegex = Regex("""^\s*[a-zA-Z][a-zA-Z0-9\s]*\s*=\s*[\d.]+\s*$""")
-        if (simpleAssignmentRegex.matches(expression)) {
-            return false
-        }
-        return hasOperators || !expression.contains("=")
-    }
 
     private fun generateBackupFileName(): String {
         val formatter = SimpleDateFormat("yyyy-MM-dd-HH-mm-ss", Locale.getDefault())

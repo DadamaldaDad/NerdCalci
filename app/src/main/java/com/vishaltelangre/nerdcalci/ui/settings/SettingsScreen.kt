@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.Pin
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -77,6 +78,7 @@ import com.vishaltelangre.nerdcalci.core.Constants
 import com.vishaltelangre.nerdcalci.data.backup.BackupFileInfo
 import com.vishaltelangre.nerdcalci.data.backup.BackupFrequency
 import com.vishaltelangre.nerdcalci.data.backup.BackupLocationMode
+import com.vishaltelangre.nerdcalci.utils.FileUtils
 import com.vishaltelangre.nerdcalci.ui.components.RestoreBackupListDialog
 import com.vishaltelangre.nerdcalci.ui.components.RestoreSourceDialog
 import com.vishaltelangre.nerdcalci.ui.components.formatBackupLocationText
@@ -110,6 +112,11 @@ fun SettingsScreen(
     onShowSymbolsShortcutsChange: (Boolean) -> Unit,
     showNumbersShortcuts: Boolean,
     onShowNumbersShortcutsChange: (Boolean) -> Unit,
+    syncEnabled: Boolean,
+    onSyncEnabledChange: (Boolean) -> Unit,
+    syncFolderUri: String?,
+    onChooseSyncFolder: () -> Unit,
+    lastSyncAt: Long?,
     onHelp: () -> Unit,
     onChangelog: () -> Unit,
     onBack: () -> Unit
@@ -334,6 +341,44 @@ fun SettingsScreen(
                 subtitle = restoreSubtitle,
                 onClick = { showRestoreActionDialog = true }
             )
+
+            Spacer(modifier = Modifier.height(8.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Spacer(modifier = Modifier.height(8.dp))
+
+            SettingsSection(title = "Sync (Experimental)")
+
+            SettingsToggleItem(
+                icon = Icons.Default.Sync,
+                title = "Sync files",
+                subtitle = "Sync files across devices using your preferred sync method (e.g., Syncthing, WebDAV, etc.)",
+                checked = syncEnabled,
+                onCheckedChange = { confirmed ->
+                    if (confirmed && syncFolderUri == null) {
+                        onChooseSyncFolder()
+                    } else {
+                        onSyncEnabledChange(confirmed)
+                    }
+                }
+            )
+
+            if (syncEnabled) {
+                SettingsItem(
+                    icon = Icons.Default.Folder,
+                    title = "Sync location",
+                    subtitle = formatSyncFolderSubtitle(syncFolderUri) ?: "Choose folder",
+                    onClick = onChooseSyncFolder
+                )
+
+                if (lastSyncAt != null) {
+                    Text(
+                        text = "Last synced ${formatRelativeTime(lastSyncAt)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -782,6 +827,21 @@ private fun formatRelativeTime(value: Long): String {
         System.currentTimeMillis(),
         DateUtils.MINUTE_IN_MILLIS
     ).toString()
+}
+
+private fun formatSyncFolderSubtitle(syncFolderUri: String?): String? {
+    if (syncFolderUri.isNullOrBlank()) return null
+
+    return try {
+        val decoded = Uri.decode(Uri.parse(syncFolderUri).lastPathSegment ?: "")
+        if (decoded.isBlank()) {
+            FileUtils.formatPathForDisplay(syncFolderUri)
+        } else {
+            FileUtils.formatPathForDisplay(decoded)
+        }
+    } catch (_: Exception) {
+        FileUtils.formatPathForDisplay(syncFolderUri)
+    }
 }
 
 private fun labelValueText(label: String, value: String) = buildAnnotatedString {

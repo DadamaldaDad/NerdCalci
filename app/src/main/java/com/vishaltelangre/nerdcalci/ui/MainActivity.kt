@@ -18,7 +18,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -58,6 +62,7 @@ import com.vishaltelangre.nerdcalci.ui.settings.SettingsScreen
 import com.vishaltelangre.nerdcalci.ui.changelog.ChangelogScreen
 import com.vishaltelangre.nerdcalci.ui.search.SearchScreen
 import com.vishaltelangre.nerdcalci.ui.theme.NerdCalciTheme
+import com.vishaltelangre.nerdcalci.utils.FileUtils
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -129,12 +134,21 @@ fun CalculatorNavHost(viewModel: CalculatorViewModel, navController: NavHostCont
     val showSymbolsShortcuts by viewModel.showSymbolsShortcuts.collectAsState()
     val showNumbersShortcuts by viewModel.showNumbersShortcuts.collectAsState()
     val restoreProgress by viewModel.restoreProgress.collectAsState()
+    
+    val syncEnabled by viewModel.syncEnabled.collectAsState()
+    val syncFolderUri by viewModel.syncFolderUri.collectAsState()
+    val lastSyncAt by viewModel.lastSyncAt.collectAsState()
     val customBackupFolderSummary = remember(customBackupFolderUri) {
-        customBackupFolderUri?.let { uriString ->
+        val uriString = customBackupFolderUri
+        if (uriString != null) {
             val parsed = Uri.parse(uriString)
-            Uri.decode(parsed.lastPathSegment ?: "")
-                .ifBlank { "Custom folder selected" }
-        } ?: "Not selected"
+            val segment = parsed.lastPathSegment ?: ""
+            val decoded = Uri.decode(segment) ?: ""
+            val formatted = FileUtils.formatPathForDisplay(decoded)
+            if (formatted.isBlank()) "Custom folder selected" else formatted
+        } else {
+            "Not selected"
+        }
     }
     val currentLocationText = formatBackupLocationText(
         mode = backupLocationMode,
@@ -179,6 +193,33 @@ fun CalculatorNavHost(viewModel: CalculatorViewModel, navController: NavHostCont
             }
             viewModel.setCustomBackupFolder(context, it)
             Toast.makeText(context, "Custom backup folder saved", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val syncFolderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        uri?.let {
+            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            try {
+                context.contentResolver.takePersistableUriPermission(it, flags)
+            } catch (_: SecurityException) {
+            }
+            viewModel.setSyncFolder(context, it)
+            Toast.makeText(context, "Sync folder saved", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.syncFiles(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -282,6 +323,11 @@ fun CalculatorNavHost(viewModel: CalculatorViewModel, navController: NavHostCont
                 onShowSymbolsShortcutsChange = { viewModel.setShowSymbolsShortcuts(it) },
                 showNumbersShortcuts = showNumbersShortcuts,
                 onShowNumbersShortcutsChange = { viewModel.setShowNumbersShortcuts(it) },
+                syncEnabled = syncEnabled,
+                onSyncEnabledChange = { viewModel.setSyncEnabled(context, it) },
+                syncFolderUri = syncFolderUri,
+                onChooseSyncFolder = { syncFolderLauncher.launch(null) },
+                lastSyncAt = lastSyncAt,
                 onHelp = { navController.navigate("help") },
                 onChangelog = { navController.navigate("changelog") },
                 onBack = { navController.popBackStack() }

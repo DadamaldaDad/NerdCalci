@@ -7,6 +7,7 @@ import android.content.SharedPreferences
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.util.Log
 import com.vishaltelangre.nerdcalci.core.Constants
 import com.vishaltelangre.nerdcalci.core.MathEngine
 import com.vishaltelangre.nerdcalci.core.FileContextLoader
@@ -36,10 +37,15 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import com.vishaltelangre.nerdcalci.utils.FileUtils
+import java.util.concurrent.atomic.AtomicBoolean
+import com.vishaltelangre.nerdcalci.data.sync.SyncManager
 
 sealed class HomeUiEvent {
     data class ShowMessage(val message: String) : HomeUiEvent()
 }
+
+private const val TAG = "CalculatorViewModel"
 
 data class FileSnapshot(
     val lines: List<LineEntity>
@@ -129,7 +135,6 @@ class CalculatorViewModel(
 
 
     companion object {
-        private const val PREF_PRECISION = "precision"
         private const val PREF_THEME = "theme"
         private const val PREF_SHOW_LINE_NUMBERS = "show_line_numbers"
         private const val PREF_SHOW_SUGGESTIONS = "show_suggestions"
@@ -144,7 +149,7 @@ class CalculatorViewModel(
     val currentTheme: StateFlow<String> = _currentTheme
 
     private val _precision = MutableStateFlow(
-        (prefs?.getInt(PREF_PRECISION, Constants.DEFAULT_PRECISION) ?: Constants.DEFAULT_PRECISION)
+        (prefs?.getInt(Constants.SYNC_ENGINE_PRECISION, Constants.DEFAULT_PRECISION) ?: Constants.DEFAULT_PRECISION)
             .coerceIn(Constants.MIN_PRECISION, Constants.MAX_PRECISION)
     )
     val precision: StateFlow<Int> = _precision
@@ -153,6 +158,25 @@ class CalculatorViewModel(
         prefs?.getBoolean(BackupManager.PREF_AUTO_BACKUP_ENABLED, true) ?: true
     )
     val autoBackupEnabled: StateFlow<Boolean> = _autoBackupEnabled
+
+    private val _syncEnabled = MutableStateFlow(
+        prefs?.getBoolean(SyncManager.PREF_SYNC_ENABLED, false) ?: false
+    )
+    val syncEnabled: StateFlow<Boolean> = _syncEnabled
+
+    private val _syncFolderUri = MutableStateFlow(
+        prefs?.getString(SyncManager.PREF_SYNC_FOLDER_URI, null)
+    )
+    val syncFolderUri: StateFlow<String?> = _syncFolderUri
+
+    private val _lastSyncAt = MutableStateFlow(
+        prefs?.getLong(SyncManager.PREF_LAST_SYNC_AT, 0L)?.takeIf { it > 0L }
+    )
+    val lastSyncAt: StateFlow<Long?> = _lastSyncAt
+
+    private val syncInProgress = AtomicBoolean(false)
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing
 
     private val _backupFrequency = MutableStateFlow(
         BackupFrequency.fromPrefValue(
@@ -214,7 +238,7 @@ class CalculatorViewModel(
     fun setPrecision(precision: Int) {
         val clampedPrecision = precision.coerceIn(Constants.MIN_PRECISION, Constants.MAX_PRECISION)
         _precision.value = clampedPrecision
-        prefs?.edit()?.putInt(PREF_PRECISION, clampedPrecision)?.apply()
+        prefs?.edit()?.putInt(Constants.SYNC_ENGINE_PRECISION, clampedPrecision)?.apply()
     }
 
     fun setShowLineNumbers(enabled: Boolean) {
@@ -269,6 +293,42 @@ class CalculatorViewModel(
             ?.apply()
         AutoBackupScheduler.sync(context, prefs ?: BackupManager.prefs(context))
         refreshBackups(context)
+    }
+
+    fun setSyncEnabled(context: Context, enabled: Boolean) {
+        _syncEnabled.value = enabled
+        prefs?.edit()?.putBoolean(SyncManager.PREF_SYNC_ENABLED, enabled)?.apply()
+        if (enabled && SyncManager.isSyncActive(context)) syncFiles(context)
+    }
+
+    fun setSyncFolder(context: Context, uri: Uri) {
+        _syncFolderUri.value = uri.toString()
+        prefs?.edit()?.putString(SyncManager.PREF_SYNC_FOLDER_URI, uri.toString())?.apply()
+        _syncEnabled.value = true
+        prefs?.edit()?.putBoolean(SyncManager.PREF_SYNC_ENABLED, true)?.apply()
+        if (SyncManager.isSyncActive(context)) syncFiles(context)
+    }
+
+    fun syncFiles(context: Context) {
+        // Do not sync if disabled or no folder
+        if (!SyncManager.isSyncActive(context)) return
+        if (!syncInProgress.compareAndSet(false, true)) return
+
+        viewModelScope.launch {
+            _isSyncing.value = true
+            try {
+                val result = SyncManager.performSync(context, dao)
+                if (result.isFailure) {
+                    _uiEvents.emit(HomeUiEvent.ShowMessage("Sync failed: ${result.exceptionOrNull()?.message}"))
+                } else {
+                    _lastSyncAt.value = System.currentTimeMillis()
+                    refreshBackups(context) // refresh if backups were updated
+                }
+            } finally {
+                _isSyncing.value = false
+                syncInProgress.set(false)
+            }
+        }
     }
 
     fun refreshBackups(context: Context) {
@@ -431,32 +491,6 @@ class CalculatorViewModel(
         }
     }
 
-    // Format lines with intelligent result display
-    private fun formatFileContent(lines: List<LineEntity>, precision: Int): String {
-        return lines.joinToString("\n") { line ->
-            val expr = line.expression.trim()
-            val rawResult = line.result.trim()
-            val displayResult = MathEngine.formatDisplayResult(rawResult, precision)
-
-            // Don't show result if:
-            // - Expression is empty or result is empty/error
-            // - It's a comment line (starts with #)
-            // - It's a simple assignment like "a = 5" where result is just "5"
-            when {
-                expr.isEmpty() || rawResult.isBlank() || rawResult == "Err" -> expr
-                expr.trimStart().startsWith("#") -> expr // Full comment line
-                shouldShowResult(expr) -> "$expr # $displayResult"
-                else -> expr
-            }
-        }
-    }
-
-    private fun shouldShowResult(expression: String): Boolean {
-        val hasOperators = expression.any { it in "+-*/%^" }
-        val simpleAssignmentRegex = Regex("""^\s*[a-zA-Z][a-zA-Z0-9\s]*\s*=\s*[\d.]+\s*$""")
-        if (simpleAssignmentRegex.matches(expression)) return false
-        return hasOperators || !expression.contains("=")
-    }
 
     // Update a line and recalculate everything from it downward
     fun updateLine(updatedLine: LineEntity) {
@@ -491,9 +525,12 @@ class CalculatorViewModel(
         }
     }
 
-    fun createNewFile(onCreated: (Long) -> Unit = {}) {
+    fun createNewFile(context: Context, onCreated: (Long) -> Unit = {}) {
         viewModelScope.launch(Dispatchers.IO) {
             val fileId = dao.createNewFile("Untitled", System.currentTimeMillis())
+            if (SyncManager.isSyncActive(context)) {
+                syncFiles(context)
+            }
             withContext(Dispatchers.Main) { onCreated(fileId) }
         }
     }
@@ -567,18 +604,40 @@ class CalculatorViewModel(
         }
     }
 
-    fun deleteFile(fileId: Long) {
-        viewModelScope.launch(Dispatchers.IO) {
+    private suspend fun performSyncAwareDelete(context: Context, fileId: Long): Boolean {
+        val file = dao.getFileById(fileId) ?: return false
+
+        if (SyncManager.isSyncActive(context)) {
+            val deleteError: Throwable? = try {
+                SyncManager.deleteExternalFile(context, file.name)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to delete external file before local delete", e)
+                e
+            }
+
+            if (deleteError != null) {
+                Log.e(TAG, "Aborting local delete because external delete failed: ${deleteError.message}")
+                _uiEvents.emit(
+                    HomeUiEvent.ShowMessage(
+                        deleteError.message ?: "Failed to delete external file"
+                    )
+                )
+                return false
+            }
+        }
+
+        dao.deleteFile(file)
+        undoStacks.remove(fileId)
+        redoStacks.remove(fileId)
+        updateUndoRedoState(fileId)
+        _excludedFileIds.value = _excludedFileIds.value - fileId
+        return true
+    }
+
+    suspend fun deleteFile(context: Context, fileId: Long): Boolean {
+        return withContext(Dispatchers.IO) {
             calculationMutex.withLock {
-                val file = dao.getFileById(fileId)
-                if (file != null) {
-                    dao.deleteFile(file)
-                    // Purge history for this file
-                    undoStacks.remove(fileId)
-                    redoStacks.remove(fileId)
-                    updateUndoRedoState(fileId)
-                }
-                _excludedFileIds.value = _excludedFileIds.value - fileId
+                performSyncAwareDelete(context, fileId)
             }
         }
     }
@@ -601,20 +660,14 @@ class CalculatorViewModel(
         }
     }
 
-    fun permanentDeleteExclusions() {
+    fun permanentDeleteExclusions(context: Context) {
         viewModelScope.launch(Dispatchers.IO) {
             calculationMutex.withLock {
                 val idsToDelete = _excludedFileIds.value
                 if (idsToDelete.isEmpty()) return@withLock
                 idsToDelete.forEach { fileId ->
-                    val file = dao.getFileById(fileId)
-                    if (file != null) {
-                        dao.deleteFile(file)
-                        undoStacks.remove(fileId)
-                        redoStacks.remove(fileId)
-                    }
+                    performSyncAwareDelete(context, fileId)
                 }
-                _excludedFileIds.value = _excludedFileIds.value - idsToDelete
             }
         }
     }
@@ -647,7 +700,7 @@ class CalculatorViewModel(
         }
     }
 
-    suspend fun renameFile(fileId: Long, newName: String): Boolean {
+    suspend fun renameFile(context: Context, fileId: Long, newName: String): Boolean {
         return withContext(Dispatchers.IO) {
             val trimmedName = newName.trim()
             if (trimmedName.isBlank()) return@withContext false
@@ -664,6 +717,14 @@ class CalculatorViewModel(
             if (dao.doesFileExist(finalName, fileId)) return@withContext false
             val file = dao.getFileById(fileId)
             if (file != null) {
+                if (SyncManager.isSyncActive(context)) {
+                    // Delete old external file in sync folder to prevent re-import as foreign file
+                    val deleteError = SyncManager.deleteExternalFile(context, file.name)
+                    if (deleteError != null) {
+                        val missingExternalFile = deleteError.message?.startsWith("External file not found:") == true
+                        if (!missingExternalFile) throw deleteError
+                    }
+                }
                 dao.updateFile(file.copy(name = finalName))
                 true
             } else {
@@ -738,7 +799,7 @@ class CalculatorViewModel(
         return withContext(Dispatchers.IO) {
             try {
                 val lines = dao.getLinesForFileSync(fileId)
-                val content = formatFileContent(lines, precision.value)
+                val content = FileUtils.formatFileContent(lines, precision.value)
                 withContext(Dispatchers.Main) { copyToClipboard(context, content, "NerdCalci File") }
                 Result.success("Copied to clipboard")
             } catch (e: Exception) {
