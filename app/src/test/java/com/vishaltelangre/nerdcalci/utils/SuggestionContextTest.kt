@@ -1,5 +1,6 @@
 package com.vishaltelangre.nerdcalci.utils
 
+import com.vishaltelangre.nerdcalci.core.UnitCategory
 import org.junit.Test
 import org.junit.Assert.*
 
@@ -12,7 +13,7 @@ class SuggestionContextTest {
         val beforeCursor = "10k"
         val context = getSuggestionContext(beforeCursor, text, cursorPos, emptyMap())
         assertEquals("k", context.word)
-        assertEquals(SuggestionType.VARIABLE, context.type)
+        assertEquals(SuggestionType.CONVERSION, context.type)
         assertEquals(2, context.replaceStart)
     }
 
@@ -25,7 +26,7 @@ class SuggestionContextTest {
         assertEquals("", context.word)
         assertEquals(SuggestionType.UNIT, context.type)
         assertTrue(context.isExplicitTrigger)
-        assertEquals(com.vishaltelangre.nerdcalci.core.UnitCategory.MASS, context.unitCategory)
+        assertEquals(UnitCategory.MASS, context.unitCategory)
     }
 
     @Test
@@ -35,7 +36,7 @@ class SuggestionContextTest {
         val beforeCursor = "10 kg t"
         val context = getSuggestionContext(beforeCursor, text, cursorPos, emptyMap())
         assertEquals("t", context.word)
-        assertEquals(SuggestionType.KEYWORD, context.type)
+        assertEquals(SuggestionType.CONVERSION, context.type)
     }
 
     @Test
@@ -56,7 +57,7 @@ class SuggestionContextTest {
         assertEquals("", context.word)
         assertEquals(SuggestionType.UNIT, context.type)
         assertEquals(3, context.argumentIndex)
-        assertEquals(com.vishaltelangre.nerdcalci.core.UnitCategory.MASS, context.unitCategory)
+        assertEquals(UnitCategory.MASS, context.unitCategory)
     }
 
     @Test
@@ -67,7 +68,7 @@ class SuggestionContextTest {
         assertEquals("m", context.word)
         assertEquals(SuggestionType.UNIT, context.type)
         assertEquals(3, context.argumentIndex)
-        assertEquals(com.vishaltelangre.nerdcalci.core.UnitCategory.MASS, context.unitCategory)
+        assertEquals(UnitCategory.MASS, context.unitCategory)
     }
 
     @Test
@@ -107,7 +108,7 @@ class SuggestionContextTest {
         assertEquals("", context.word)
         assertEquals(SuggestionType.UNIT, context.type)
         assertTrue(context.isExplicitTrigger)
-        assertEquals(com.vishaltelangre.nerdcalci.core.UnitCategory.SCALAR, context.unitCategory)
+        assertEquals(UnitCategory.SCALAR, context.unitCategory)
     }
 
     @Test

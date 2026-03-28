@@ -4,9 +4,11 @@ import com.vishaltelangre.nerdcalci.core.Token
 import com.vishaltelangre.nerdcalci.core.TokenKind
 import com.vishaltelangre.nerdcalci.core.Lexer
 import com.vishaltelangre.nerdcalci.core.UnitConverter
+import com.vishaltelangre.nerdcalci.core.Unit
+import com.vishaltelangre.nerdcalci.core.UnitCategory
 
 enum class TokenType {
-    Number, Variable, Keyword, Operator, Percent, Comment, Function, StringLiteral, Default
+    Number, Variable, Keyword, Conversion, Operator, Percent, Comment, Function, StringLiteral, Default
 }
 
 data class SyntaxToken(val start: Int, val end: Int, val type: TokenType)
@@ -60,12 +62,11 @@ object SyntaxUtils {
                     while (j < text.length && text[j].isWhitespace()) j++
                     val isFunction = j < text.length && text[j] == '('
 
-                    val type = if (word in KEYWORD_NAMES) {
-                        TokenType.Keyword
-                    } else if (isFunction) {
-                        TokenType.Function
-                    } else {
-                        TokenType.Variable
+                    val type = when {
+                        word.lowercase() in setOf("to", "in", "as") -> TokenType.Conversion
+                        word in KEYWORD_NAMES -> TokenType.Keyword
+                        isFunction -> TokenType.Function
+                        else -> TokenType.Variable
                     }
                     tokens.add(SyntaxToken(start, i, type))
                     continue
@@ -88,7 +89,7 @@ object SyntaxUtils {
 }
 /**
  * Returns the range of the identifier at the given index.
- * Matches the definition of an identifier in [com.vishaltelangre.nerdcalci.core.Lexer].
+ * Matches the definition of an identifier in [Lexer].
  */
 fun String.getIdentifierRangeAt(index: Int): IntRange {
     var start = index
@@ -176,9 +177,22 @@ fun getSuggestionContext(
                     TokenKind.KW_AS
                 )
             }
-            if (kwIndex >= 1) {
-                val prevToken = cleanTokens[kwIndex - 1]
-                val unit = if (prevToken.kind == TokenKind.IDENTIFIER) UnitConverter.findUnit(prevToken.lexeme) else null
+            if (kwIndex >= 0) {
+                var unit: Unit? = null
+                var currentUnitStr = ""
+                for (i in (kwIndex - 1) downTo 0) {
+                    val t = cleanTokens[i]
+                    if (t.kind == TokenKind.IDENTIFIER || t.kind == TokenKind.KW_OF || t.kind == TokenKind.KW_TO || t.kind == TokenKind.KW_IN || t.kind == TokenKind.KW_AS) {
+                        currentUnitStr = if (currentUnitStr.isEmpty()) t.lexeme else "${t.lexeme} $currentUnitStr"
+                        val found = UnitConverter.findUnit(currentUnitStr)
+                        if (found != null) {
+                            unit = found
+                        }
+                    } else {
+                        break
+                    }
+                }
+
                 val kwToken = cleanTokens[kwIndex]
                 val endPos = kwToken.position + kwToken.lexeme.length
                 var replaceStart = endPos
@@ -189,7 +203,8 @@ fun getSuggestionContext(
                     beforeCursor.substring(replaceStart)
                 } else ""
                 val isExplicit = kwIndex == cleanTokens.size - 1
-                return SuggestionContextInfo(currentWord, SuggestionType.UNIT, isExplicit, unit?.category, replaceStart = replaceStart)
+                val needsSpace = replaceStart == endPos && (replaceStart == beforeCursor.length || !beforeCursor[replaceStart].isWhitespace())
+                return SuggestionContextInfo(currentWord, SuggestionType.UNIT, isExplicit, unit?.category, replaceStart = replaceStart, needsSpace = needsSpace)
             }
 
             // Check for convert() function arguments context (e.g. convert(10, "km", "m"))
@@ -198,15 +213,62 @@ fun getSuggestionContext(
                 return convertContext
             }
 
-            val lastToken = cleanTokens.last()
-            val prevToken = cleanTokens.getOrNull(cleanTokens.size - 2)
-            val prevPrevToken = cleanTokens.getOrNull(cleanTokens.size - 3)
 
-            if (lastToken.kind == TokenKind.IDENTIFIER &&
-                prevToken?.kind == TokenKind.IDENTIFIER) {
-                if (prevPrevToken?.kind == TokenKind.NUMBER &&
-                    UnitConverter.findUnit(prevToken.lexeme) != null) {
-                    return SuggestionContextInfo(lastToken.lexeme, SuggestionType.KEYWORD, true)
+            // Check if last tokens form a quantity (Number + [Unit])
+
+            // 1. Full composite unit detection (e.g. "kilometers per hour ")
+            val (compositeUnitStart, category) = detectCompositeUnit(beforeCursor)
+            val lastToken = cleanTokens.last()
+            
+            if (compositeUnitStart != -1) {
+                // If cursor is right after the unit and there's a space, suggest keywords
+                if (beforeCursor.endsWith(" ")) {
+                    return SuggestionContextInfo(
+                        word = "",
+                        type = SuggestionType.CONVERSION,
+                        isExplicitTrigger = true,
+                        unitStart = compositeUnitStart,
+                        unitCategory = category
+                    )
+                }
+
+                // If typing an identifier after a unit (e.g. "10 kg t"), it's still a conversion context
+                if (lastToken.kind == TokenKind.IDENTIFIER && lastToken.position > compositeUnitStart) {
+                    return SuggestionContextInfo(
+                        word = lastToken.lexeme,
+                        type = SuggestionType.CONVERSION,
+                        isExplicitTrigger = false,
+                        unitStart = compositeUnitStart,
+                        unitCategory = category,
+                        replaceStart = lastToken.position
+                    )
+                }
+            }
+
+            val tokenBeforeLast = if (cleanTokens.size >= 2) cleanTokens[cleanTokens.size - 2] else null
+
+            // 2. Typing unit after number: "15 new"
+            if (lastToken.kind == TokenKind.IDENTIFIER && tokenBeforeLast?.kind == TokenKind.NUMBER) {
+                val found = UnitConverter.findUnit(lastToken.lexeme)
+                return SuggestionContextInfo(
+                    word = lastToken.lexeme,
+                    type = SuggestionType.CONVERSION,
+                    isExplicitTrigger = false,
+                    unitStart = lastToken.position,
+                    unitCategory = found?.category,
+                    replaceStart = lastToken.position
+                )
+            }
+
+            // 3. Simple number followed by space: "15 "
+            if (lastToken.kind == TokenKind.NUMBER) {
+                if (beforeCursor.endsWith(" ")) {
+                    return SuggestionContextInfo(
+                        word = "",
+                        type = SuggestionType.CONVERSION,
+                        isExplicitTrigger = true,
+                        unitStart = lastToken.position + lastToken.lexeme.length + 1
+                    )
                 }
             }
         }
@@ -285,6 +347,43 @@ private fun getConvertSuggestionContext(cleanTokens: List<Token>, cursorPos: Int
         scanIdx--
     }
     return null
+}
+
+private fun detectCompositeUnit(text: String): Pair<Int, UnitCategory?> {
+    val tokens = try { Lexer(text).tokenize() } catch (e: Exception) { return -1 to null }
+    val cleanTokens = tokens.filter { it.kind != TokenKind.EOF && it.kind != TokenKind.SEMICOLON }
+    if (cleanTokens.isEmpty()) return -1 to null
+
+    val lastNumberIndex = cleanTokens.indexOfLast { it.kind == TokenKind.NUMBER }
+    if (lastNumberIndex == -1) return -1 to null
+
+    val startTokenIndex = lastNumberIndex + 1
+    if (startTokenIndex >= cleanTokens.size) return -1 to null
+
+    // We look for the LONGEST matching unit starting after the number.
+    var bestStart = -1
+    var bestCategory: UnitCategory? = null
+    var maxLength = -1
+
+    for (i in startTokenIndex until cleanTokens.size) {
+        var currentUnitStr = ""
+        for (j in i until cleanTokens.size) {
+            val t = cleanTokens[j]
+            currentUnitStr = if (currentUnitStr.isEmpty()) t.lexeme else "$currentUnitStr ${t.lexeme}"
+
+            val unit = UnitConverter.findUnit(currentUnitStr)
+            if (unit != null) {
+                val fullSuffix = currentUnitStr.trim()
+                if (fullSuffix.length > maxLength) {
+                    bestStart = cleanTokens[i].position
+                    bestCategory = unit.category
+                    maxLength = fullSuffix.length
+                }
+            }
+        }
+    }
+
+    return bestStart to bestCategory
 }
 
 /**

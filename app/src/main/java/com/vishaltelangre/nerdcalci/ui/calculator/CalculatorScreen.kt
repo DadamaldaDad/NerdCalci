@@ -4,6 +4,8 @@ import com.vishaltelangre.nerdcalci.core.Builtins
 import com.vishaltelangre.nerdcalci.core.MathEngine
 import com.vishaltelangre.nerdcalci.core.UnitCategory
 import com.vishaltelangre.nerdcalci.core.UnitConverter
+import com.vishaltelangre.nerdcalci.core.Lexer
+import com.vishaltelangre.nerdcalci.core.TokenKind
 import androidx.compose.foundation.background
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
@@ -142,6 +144,7 @@ import com.vishaltelangre.nerdcalci.ui.components.FileInfoDialog
 import com.vishaltelangre.nerdcalci.ui.theme.FiraCodeFamily
 import com.vishaltelangre.nerdcalci.utils.ExportUtils
 import com.vishaltelangre.nerdcalci.utils.SyntaxUtils
+import com.vishaltelangre.nerdcalci.utils.getSuggestionContext
 import com.vishaltelangre.nerdcalci.utils.TokenType
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -150,6 +153,7 @@ import com.vishaltelangre.nerdcalci.utils.calculateFuzzyMatch
 import com.vishaltelangre.nerdcalci.utils.Suggestion
 import com.vishaltelangre.nerdcalci.utils.SuggestionType
 import com.vishaltelangre.nerdcalci.utils.getIdentifierRangeAt
+import com.vishaltelangre.nerdcalci.ui.theme.ResultSuccess
 import android.content.res.Configuration
 
 import com.vishaltelangre.nerdcalci.ui.theme.SyntaxColors
@@ -167,6 +171,7 @@ private class SyntaxHighlightingTransformation(
     private val operatorColor: Color,
     private val percentColor: Color,
     private val commentColor: Color,
+    private val conversionColor: Color,
     private val defaultColor: Color,
     private val fileVariables: Map<String, String> = emptyMap()
 ) : VisualTransformation {
@@ -186,6 +191,7 @@ private class SyntaxHighlightingTransformation(
                 operatorColor,
                 percentColor,
                 commentColor,
+                conversionColor,
                 defaultColor,
                 fileVariables
             )
@@ -223,6 +229,7 @@ private fun applySyntaxHighlighting(
     operatorColor: Color,
     percentColor: Color,
     commentColor: Color,
+    conversionColor: Color,
     defaultColor: Color,
     fileVariables: Map<String, String> = emptyMap()
 ): AnnotatedString {
@@ -241,6 +248,7 @@ private fun applySyntaxHighlighting(
                 TokenType.Operator -> operatorColor
                 TokenType.Percent -> percentColor
                 TokenType.Comment -> commentColor
+                TokenType.Conversion -> conversionColor
                 TokenType.StringLiteral -> keywordColor
                 TokenType.Default -> defaultColor
             }
@@ -489,6 +497,7 @@ fun CalculatorScreen(
     val percentColor = if (isDarkTheme) SyntaxColors.PercentColorDark else SyntaxColors.PercentColorLight
     val commentColor = if (isDarkTheme) SyntaxColors.CommentColorDark else SyntaxColors.CommentColorLight
     val functionColor = if (isDarkTheme) SyntaxColors.FunctionColorDark else SyntaxColors.FunctionColorLight
+    val conversionColor = if (isDarkTheme) SyntaxColors.ConversionColorDark else SyntaxColors.ConversionColorLight
 
     Scaffold(
         modifier = Modifier
@@ -897,6 +906,7 @@ fun CalculatorScreen(
                         operatorColor = operatorColor,
                         percentColor = percentColor,
                         commentColor = commentColor,
+                        conversionColor = conversionColor,
                         onFocused = {
                             currentlyFocusedLineId = line.id
                             focusLineId = null
@@ -1117,6 +1127,7 @@ private fun LineRow(
     operatorColor: Color,
     percentColor: Color,
     commentColor: Color,
+    conversionColor: Color,
     onFocused: () -> Unit,
     onBlur: () -> Unit,
     onValueChange: (String) -> Unit,
@@ -1137,7 +1148,7 @@ private fun LineRow(
 
     val syntaxHighlightingTransformation = remember(
         numberColor, variableColor, keywordColor, functionColor,
-        operatorColor, percentColor, commentColor, defaultTextColor, fileVariables
+        operatorColor, percentColor, commentColor, conversionColor, defaultTextColor, fileVariables
     ) {
         SyntaxHighlightingTransformation(
             numberColor = numberColor,
@@ -1147,6 +1158,7 @@ private fun LineRow(
             operatorColor = operatorColor,
             percentColor = percentColor,
             commentColor = commentColor,
+            conversionColor = conversionColor,
             defaultColor = defaultTextColor,
             fileVariables = fileVariables
         )
@@ -1171,7 +1183,7 @@ private fun LineRow(
         val cursorPos = textFieldValue.selection.start
         val text = textFieldValue.text
         val beforeCursor = if (cursorPos > 0) text.substring(0, cursorPos) else ""
-        com.vishaltelangre.nerdcalci.utils.getSuggestionContext(
+        getSuggestionContext(
             beforeCursor,
             text,
             cursorPos,
@@ -1240,11 +1252,11 @@ private fun LineRow(
         val text = textFieldValue.text
         val beforeCursor = if (cursorPos > 0) text.substring(0, cursorPos) else ""
 
-        if (!forceDismissSuggestions && showSuggestions && (currentWord.isNotEmpty() || isExplicitTrigger)) {
+        if (!forceDismissSuggestions && showSuggestions && (currentWord.isNotEmpty() || isExplicitTrigger || contextType == SuggestionType.UNIT || contextType == SuggestionType.CONVERSION)) {
             val tokens = runCatching { 
-                com.vishaltelangre.nerdcalci.core.Lexer(beforeCursor).tokenize() 
+                Lexer(beforeCursor).tokenize() 
             }.getOrElse { emptyList() }
-            val cleanTokens = tokens.filter { it.kind != com.vishaltelangre.nerdcalci.core.TokenKind.EOF }
+            val cleanTokens = tokens.filter { it.kind != TokenKind.EOF }
 
             if (loadingSuggestions && combinedVariables.isEmpty()) {
                 return@remember listOf(Suggestion("Loading...", SuggestionType.VARIABLE))
@@ -1282,18 +1294,49 @@ private fun LineRow(
                         it.copy(matchIndices = match.matchIndices, score = if (currentWord.isEmpty()) 100 - units.indexOfFirst { u -> u.symbols.contains(it.name) } else match.score)
                     } else null
                 }.sortedByDescending { it.score }
-            } else if (contextType == SuggestionType.KEYWORD) {
-                listOf("to", "in", "as").map { Suggestion(name = it, type = SuggestionType.KEYWORD) }.mapNotNull {
-                    val match = it.name.calculateFuzzyMatch(currentWord, SuggestionType.KEYWORD)
+            } else if (contextType == SuggestionType.KEYWORD || contextType == SuggestionType.CONVERSION) {
+                val keywords = listOf("to", "in", "as").map { Suggestion(name = it, type = SuggestionType.CONVERSION) }.mapNotNull {
+                    val match = it.name.calculateFuzzyMatch(currentWord, SuggestionType.CONVERSION)
                     if (match != null && it.name != currentWord) {
                         it.copy(matchIndices = match.matchIndices, score = match.score)
                     } else null
-                }.sortedByDescending { it.score }
+                }
+
+                val unitSuggestions = if (suggestionContext.unitStart != null) {
+                    val unitQuery = (beforeCursor.substring(suggestionContext.unitStart, cursorPos)).trim()
+                    val category = suggestionContext.unitCategory
+                    val unitsForCategory = if (category != null) {
+                        UnitConverter.UNITS.filter { u ->
+                            u.category == category ||
+                                    (category == UnitCategory.SCALAR && u.category == UnitCategory.NUMERAL_SYSTEM) ||
+                                    (category == UnitCategory.NUMERAL_SYSTEM && u.category == UnitCategory.SCALAR)
+                        }
+                    } else {
+                        UnitConverter.UNITS
+                    }
+
+                    unitsForCategory.flatMap { unit ->
+                        unit.symbols.map { symbol ->
+                            val match = symbol.calculateFuzzyMatch(unitQuery, SuggestionType.UNIT)
+                            if (match != null && symbol != unitQuery) {
+                                Suggestion(
+                                    name = symbol,
+                                    type = SuggestionType.UNIT,
+                                    matchIndices = match.matchIndices,
+                                    score = if (unitQuery.isEmpty()) 99 - UnitConverter.UNITS.indexOf(unit) % 100 else match.score,
+                                    replaceStart = suggestionContext.unitStart
+                                )
+                            } else null
+                        }
+                    }.filterNotNull()
+                } else emptyList()
+
+                (keywords + unitSuggestions).sortedByDescending { it.score }
             } else {
                 if (currentWord.isEmpty() || (currentWord.any { char -> char.isLetter() || char == '_' } &&
                     currentWord.all { char -> char.isLetterOrDigit() || char == '_' })) {
                     val prevToken = cleanTokens.getOrNull(cleanTokens.size - 2)
-                    val showUnits = prevToken?.kind == com.vishaltelangre.nerdcalci.core.TokenKind.NUMBER
+                    val showUnits = prevToken?.kind == TokenKind.NUMBER
                     val unitsList = if (showUnits) {
                         UnitConverter.UNITS.flatMap { u -> u.symbols.map { Suggestion(it, SuggestionType.UNIT) } }
                     } else emptyList()
@@ -1556,8 +1599,10 @@ private fun LineRow(
                     keywordColor = keywordColor,
                     functionColor = functionColor,
                     variableColor = variableColor,
+                    conversionColor = conversionColor,
                     replaceStart = suggestionContext.replaceStart,
-                    argumentIndex = suggestionContext.argumentIndex
+                    argumentIndex = suggestionContext.argumentIndex,
+                    needsSpace = suggestionContext.needsSpace
                 )
             }
         }
@@ -1576,7 +1621,7 @@ private fun LineRow(
             val resultColor = if (isError) {
                 MaterialTheme.colorScheme.error
             } else {
-                com.vishaltelangre.nerdcalci.ui.theme.ResultSuccess
+                ResultSuccess
             }
 
             var showTooltip by remember(line.id) { mutableStateOf(false) }

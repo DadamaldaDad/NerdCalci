@@ -1,7 +1,9 @@
 package com.vishaltelangre.nerdcalci.utils
 
+import com.vishaltelangre.nerdcalci.core.UnitCategory
+
 enum class SuggestionType {
-    VARIABLE, LOCAL_FUNCTION, GLOBAL_FUNCTION, CONSTANT, DYNAMIC_VARIABLE, FILE, UNIT, KEYWORD
+    VARIABLE, LOCAL_FUNCTION, GLOBAL_FUNCTION, CONSTANT, DYNAMIC_VARIABLE, FILE, UNIT, KEYWORD, CONVERSION
 }
 
 data class Suggestion(
@@ -17,7 +19,9 @@ data class SuggestionContextInfo(
     val word: String,
     val type: SuggestionType,
     val isExplicitTrigger: Boolean,
-    val unitCategory: com.vishaltelangre.nerdcalci.core.UnitCategory? = null,
+    val unitCategory: UnitCategory? = null,
     val replaceStart: Int? = null,
-    val argumentIndex: Int? = null
+    val argumentIndex: Int? = null,
+    val unitStart: Int? = null,
+    val needsSpace: Boolean = false
 )
