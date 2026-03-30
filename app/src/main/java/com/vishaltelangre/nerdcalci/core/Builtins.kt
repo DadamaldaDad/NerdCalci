@@ -1,5 +1,8 @@
 package com.vishaltelangre.nerdcalci.core
 
+import java.math.BigDecimal
+import java.math.BigInteger
+import java.math.MathContext as JavaMathContext
 import kotlin.math.*
 
 /**
@@ -10,7 +13,10 @@ import kotlin.math.*
  */
 object Builtins {
 
-    private data class BuiltinFn(val arity: Int, val body: (List<Double>) -> Double)
+    private val mc = JavaMathContext.DECIMAL128
+    private const val MAX_FACTORIAL_INPUT = 1000
+
+    private data class BuiltinFn(val arity: Int, val body: (List<BigDecimal>) -> BigDecimal)
 
     private val functions: Map<String, BuiltinFn> = mapOf(
         // Unit-stripping placeholder helpers
@@ -18,44 +24,58 @@ object Builtins {
         "dropUnit" to BuiltinFn(1) { it[0] },
         "raw" to BuiltinFn(1) { it[0] },
 
-        // Trigonometric
-        "sin"    to BuiltinFn(1) { sin(it[0]) },
-        "cos"    to BuiltinFn(1) { cos(it[0]) },
-        "tan"    to BuiltinFn(1) { tan(it[0]) },
-        "asin"   to BuiltinFn(1) { asin(it[0]) },
-        "acos"   to BuiltinFn(1) { acos(it[0]) },
-        "atan"   to BuiltinFn(1) { atan(it[0]) },
-        "sinh"   to BuiltinFn(1) { sinh(it[0]) },
-        "cosh"   to BuiltinFn(1) { cosh(it[0]) },
-        "tanh"   to BuiltinFn(1) { tanh(it[0]) },
+        // Trigonometric (Fallback to Double)
+        "sin"    to BuiltinFn(1) { BigDecimal(sin(it[0].toDouble()), mc) },
+        "cos"    to BuiltinFn(1) { BigDecimal(cos(it[0].toDouble()), mc) },
+        "tan"    to BuiltinFn(1) { BigDecimal(tan(it[0].toDouble()), mc) },
+        "asin"   to BuiltinFn(1) { BigDecimal(asin(it[0].toDouble()), mc) },
+        "acos"   to BuiltinFn(1) { BigDecimal(acos(it[0].toDouble()), mc) },
+        "atan"   to BuiltinFn(1) { BigDecimal(atan(it[0].toDouble()), mc) },
+        "sinh"   to BuiltinFn(1) { BigDecimal(sinh(it[0].toDouble()), mc) },
+        "cosh"   to BuiltinFn(1) { BigDecimal(cosh(it[0].toDouble()), mc) },
+        "tanh"   to BuiltinFn(1) { BigDecimal(tanh(it[0].toDouble()), mc) },
 
         // Logarithmic
-        "log"    to BuiltinFn(1) { ln(it[0]) },
-        "log10"  to BuiltinFn(1) { log10(it[0]) },
-        "log2"   to BuiltinFn(1) { log(it[0], 2.0) },
-        "log1p"  to BuiltinFn(1) { ln(1.0 + it[0]) },
+        "log"    to BuiltinFn(1) { BigDecimal(ln(it[0].toDouble()), mc) },
+        "log10"  to BuiltinFn(1) { BigDecimal(log10(it[0].toDouble()), mc) },
+        "log2"   to BuiltinFn(1) { BigDecimal(log(it[0].toDouble(), 2.0), mc) },
+        "log1p"  to BuiltinFn(1) { BigDecimal(ln(1.0 + it[0].toDouble()), mc) },
 
         // Power / roots
-        "sqrt"   to BuiltinFn(1) { sqrt(it[0]) },
-        "cbrt"   to BuiltinFn(1) { cbrt(it[0]) },
-        "pow"    to BuiltinFn(2) { it[0].pow(it[1]) },
-        "exp"    to BuiltinFn(1) { exp(it[0]) },
-        "expm1"  to BuiltinFn(1) { expm1(it[0]) },
+        "sqrt"   to BuiltinFn(1) { BigDecimal(sqrt(it[0].toDouble()), mc) },
+        "cbrt"   to BuiltinFn(1) { BigDecimal(cbrt(it[0].toDouble()), mc) },
+        "pow"    to BuiltinFn(2) {
+            val base = it[0]
+            val exponent = it[1]
+            try {
+                // Check if exponent is an exact integer
+                val exponentInt = exponent.toBigIntegerExact().toInt()
+                // Use BigDecimal.pow for exact integer exponents
+                base.pow(exponentInt, mc)
+            } catch (_: ArithmeticException) {
+                // Exponent is not an exact integer, fall back to Double-based approach
+                BigDecimal(base.toDouble().pow(exponent.toDouble()), mc)
+            }
+        },
+        "exp"    to BuiltinFn(1) { BigDecimal(exp(it[0].toDouble()), mc) },
+        "expm1"  to BuiltinFn(1) { BigDecimal(expm1(it[0].toDouble()), mc) },
+        "factorial" to BuiltinFn(1) { factorial(it[0]) },
+        "fact"      to BuiltinFn(1) { factorial(it[0]) },
 
         // Rounding / sign
-        "abs"    to BuiltinFn(1) { abs(it[0]) },
-        "floor"  to BuiltinFn(1) { floor(it[0]) },
-        "ceil"   to BuiltinFn(1) { ceil(it[0]) },
-        "signum" to BuiltinFn(1) { sign(it[0]) },
+        "abs"    to BuiltinFn(1) { it[0].abs() },
+        "floor"  to BuiltinFn(1) { BigDecimal(floor(it[0].toDouble()), mc) },
+        "ceil"   to BuiltinFn(1) { BigDecimal(ceil(it[0].toDouble()), mc) },
+        "signum" to BuiltinFn(1) { BigDecimal(sign(it[0].toDouble()), mc) },
     )
 
     /** Built-in constants accessible as bare identifiers. */
-    private val constants: Map<String, Double> = mapOf(
-        "PI" to PI,
-        "pi" to PI,
-        "π"  to PI,
-        "E"  to E,
-        "e"  to E,
+    private val constants: Map<String, BigDecimal> = mapOf(
+        "PI" to BigDecimal("3.1415926535897932384626433832795028841971"),
+        "pi" to BigDecimal("3.1415926535897932384626433832795028841971"),
+        "π"  to BigDecimal("3.1415926535897932384626433832795028841971"),
+        "E"  to BigDecimal("2.7182818284590452353602874713526624977572"),
+        "e"  to BigDecimal("2.7182818284590452353602874713526624977572"),
     )
 
     val functionNames: Set<String> get() = functions.keys
@@ -68,7 +88,7 @@ object Builtins {
      * @throws UnknownFunctionException if no function with this name exists
      * @throws ArityMismatchException if the argument count doesn't match
      */
-    fun call(name: String, args: List<Double>): Double {
+    fun call(name: String, args: List<BigDecimal>): BigDecimal {
         val fn = functions[name]
             ?: throw UnknownFunctionException(name)
         if (fn.arity != args.size) {
@@ -87,8 +107,32 @@ object Builtins {
     fun isConstant(name: String): Boolean = name in constants
 
     /** Get the value of a bare constant, or null if [name] isn't one. */
-    fun constantValue(name: String): Double? = constants[name]
+    fun constantValue(name: String): BigDecimal? = constants[name]
 
     /** Returns true if [name] is any built-in (function or constant). */
     fun isBuiltin(name: String): Boolean = isFunction(name) || isConstant(name)
+
+    private fun factorial(value: BigDecimal): BigDecimal {
+        val integerValue = try {
+            value.toBigIntegerExact()
+        } catch (_: ArithmeticException) {
+            throw EvalException("Factorial is only defined for whole numbers")
+        }
+
+        if (integerValue.signum() < 0) {
+            throw EvalException("Factorial is only defined for non-negative whole numbers")
+        }
+
+        if (integerValue > BigInteger.valueOf(MAX_FACTORIAL_INPUT.toLong())) {
+            throw EvalException("Factorial is only supported up to $MAX_FACTORIAL_INPUT")
+        }
+
+        var result = BigInteger.ONE
+        var current = BigInteger.valueOf(2)
+        while (current <= integerValue) {
+            result = result.multiply(current)
+            current = current.add(BigInteger.ONE)
+        }
+        return BigDecimal(result)
+    }
 }

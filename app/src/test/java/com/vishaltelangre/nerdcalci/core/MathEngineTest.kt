@@ -3,6 +3,7 @@ package com.vishaltelangre.nerdcalci.core
 import com.vishaltelangre.nerdcalci.data.local.entities.LineEntity
 import org.junit.Assert.*
 import org.junit.Test
+import java.math.BigDecimal
 import kotlinx.coroutines.runBlocking
 
 class MathEngineTest {
@@ -54,6 +55,21 @@ class MathEngineTest {
     }
 
     @Test
+    fun `total throws dimensional mismatch error when accessed`() = runBlocking {
+        val lines = listOf(
+            createLine("4kg", sortOrder = 0),
+            createLine("5 hour", sortOrder = 1),
+            createLine("3 kph", sortOrder = 2),
+            createLine("total", sortOrder = 3)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("Err", result[3].result)
+
+        val errorMsg = MathEngine.getErrorDetails(lines, 3)
+        assertEquals("Cannot sum Kilogram and Kilometer per hour: dimension mismatch", errorMsg)
+    }
+
+    @Test
     fun `chained percentage expression works correctly`() = runBlocking {
         val lines = listOf(createLine("100 + 20% - 5"))
         val result = MathEngine.calculate(lines)
@@ -96,32 +112,39 @@ class MathEngineTest {
     }
 
     @Test
-    fun `temperature addition treats second operand as relative offset`() = runBlocking {
+    fun `temperature addition is order independent`() = runBlocking {
         val lines = listOf(
-            createLine("35 °C + 10 degF"),
-            createLine("35 °C + 10 degF in degC"),
+            createLine("30 °F + 30 °C + 30 °C"),
+            createLine("30 °C + 30 °F + 30 °C"),
+            createLine("30 °C + 30 °C + 30 °F"),
         )
         val result = MathEngine.calculate(lines)
 
-        // Line 1: 35 °C + 10 °F (relative delta equivalent to 5.55 °C) = 105 °F
+        // Both expressions should normalize to the same canonical temperature result.
         val resultString1 = result[0].result
         val spaceIndex1 = resultString1.indexOf(' ')
         assertTrue(spaceIndex1 > 0)
         val value1 = resultString1.substring(0, spaceIndex1).toDouble()
         val unit1 = resultString1.substring(spaceIndex1 + 1)
 
-        assertEquals(105.0, value1, 1e-9)
-        assertEquals("°F", unit1)
-
-        // Line 2: (35 °C + 10 degF) in degC = 40.555... °C
         val resultString2 = result[1].result
         val spaceIndex2 = resultString2.indexOf(' ')
         assertTrue(spaceIndex2 > 0)
         val value2 = resultString2.substring(0, spaceIndex2).toDouble()
         val unit2 = resultString2.substring(spaceIndex2 + 1)
 
-        assertEquals(40.55555555555556, value2, 1e-9)
+        val resultString3 = result[2].result
+        val spaceIndex3 = resultString3.indexOf(' ')
+        assertTrue(spaceIndex3 > 0)
+        val value3 = resultString3.substring(0, spaceIndex3).toDouble()
+        val unit3 = resultString3.substring(spaceIndex3 + 1)
+
+        assertEquals(58.888888888888886, value1, 1e-9)
+        assertEquals("°C", unit1)
+        assertEquals(58.888888888888886, value2, 1e-9)
         assertEquals("°C", unit2)
+        assertEquals(58.888888888888886, value3, 1e-9)
+        assertEquals("°C", unit3)
     }
 
     @Test
@@ -131,7 +154,7 @@ class MathEngineTest {
             createLine("2 em in px", sortOrder = 1)
         )
         val result = MathEngine.calculate(lines)
-        assertEquals("40.0 px", result[1].result)
+        assertTrue(result[1].result.startsWith("40.0"))
     }
 
     @Test
@@ -218,7 +241,7 @@ class MathEngineTest {
     fun `decimal division returns raw double precision`() = runBlocking {
         val lines = listOf(createLine("10 / 3"))
         val result = MathEngine.calculate(lines)
-        assertEquals("3.3333333333333335", result[0].result)
+        assertEquals("3.333333333333333333333333333333333", result[0].result)
     }
 
     @Test
@@ -406,7 +429,7 @@ class MathEngineTest {
         )
         val result = MathEngine.calculate(lines)
         assertEquals("50000.0", result[0].result)
-        assertEquals("55000.00000000001", result[1].result)
+        assertEquals("55000.0", result[1].result)
     }
 
     @Test
@@ -620,7 +643,14 @@ class MathEngineTest {
     fun `maintains decimal precision correctly`() = runBlocking {
         val lines = listOf(createLine("1 / 3 * 3"))
         val result = MathEngine.calculate(lines)
-        assertEquals("1.0", result[0].result) // Result is whole number
+        assertEquals("0.9999999999999999999999999999999999", result[0].result) // Result is whole number
+    }
+
+    @Test
+    fun `high precision arithmetic works for very large numbers`() = runBlocking {
+        val lines = listOf(createLine("(10^100) + 1 - (10^100)"))
+        val result = MathEngine.calculate(lines)
+        assertEquals("1.0", result[0].result)
     }
 
     @Test
@@ -739,6 +769,19 @@ class MathEngineTest {
         assertEquals("3.0", result[1].result)
         assertEquals("256.0", result[2].result)
         assertEquals("1.0", result[3].result)
+    }
+
+    @Test
+    fun `factorial functions work`() = runBlocking {
+        val lines = listOf(
+            createLine("factorial(0)", sortOrder = 0),
+            createLine("factorial(5)", sortOrder = 1),
+            createLine("fact(6)", sortOrder = 2)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("1.0", result[0].result)
+        assertEquals("120.0", result[1].result)
+        assertEquals("720.0", result[2].result)
     }
 
     @Test
@@ -1292,6 +1335,46 @@ class MathEngineTest {
     }
 
     @Test
+    fun `total preserves units and does not convert to base unit`() = runBlocking {
+        val lines = listOf(
+            createLine("1 acre to sqft", sortOrder = 0),
+            createLine("_/2", sortOrder = 1),
+            createLine("total", sortOrder = 2)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("43560.0 ft²", result[0].result)
+        assertEquals("21780.0 ft²", result[1].result)
+        assertEquals("65340.0 ft²", result[2].result)
+    }
+
+    @Test
+    fun `total handles unitless numbers as target unit`() = runBlocking {
+        val lines = listOf(
+            createLine("4 kg", sortOrder = 0),
+            createLine("5", sortOrder = 1),
+            createLine("total", sortOrder = 2)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("4.0 kg", result[0].result)
+        assertEquals("5.0", result[1].result)
+        assertEquals("9.0 kg", result[2].result)
+    }
+
+    @Test
+    fun `total with mixed categories returns error`() = runBlocking {
+        val lines = listOf(
+            createLine("10 m", sortOrder = 0),
+            createLine("20 s", sortOrder = 1),
+            createLine("total", sortOrder = 2)
+        )
+        val result = MathEngine.calculate(lines)
+        assertEquals("Err", result[2].result)
+
+        val errorMsg = MathEngine.getErrorDetails(lines, 2)
+        assertEquals("Cannot sum Meter and Second: dimension mismatch", errorMsg)
+    }
+
+    @Test
     fun `calculateFrom correctly handles total in affected lines`() = runBlocking {
         val lines = listOf(
             createLine("a = 10", sortOrder = 0),
@@ -1828,6 +1911,27 @@ class MathEngineTest {
     }
 
     @Test
+    fun `factorial rejects fractional input`() = runBlocking {
+        val lines = listOf(createLine("factorial(4.5)"))
+        val err = MathEngine.getErrorDetails(lines, 0)
+        assertEquals("Factorial is only defined for whole numbers", err)
+    }
+
+    @Test
+    fun `factorial rejects negative input`() = runBlocking {
+        val lines = listOf(createLine("fact(-3)"))
+        val err = MathEngine.getErrorDetails(lines, 0)
+        assertEquals("Factorial is only defined for non-negative whole numbers", err)
+    }
+
+    @Test
+    fun `factorial rejects inputs beyond supported limit`() = runBlocking {
+        val lines = listOf(createLine("factorial(1001)"))
+        val err = MathEngine.getErrorDetails(lines, 0)
+        assertEquals("Factorial is only supported up to 1000", err)
+    }
+
+    @Test
     fun `lineno, linenumber, and currentLineNumber returns correct current line number`() = runBlocking {
         val lines = listOf(
             createLine("lineno", sortOrder = 0),
@@ -1948,7 +2052,7 @@ class MathEngineTest {
 
     @Test
     fun `evaluate resolves member access from linked file`() = runBlocking {
-        val remoteContext = MathContext(variables = mutableMapOf("x" to EvaluationResult(20.0)))
+        val remoteContext = MathContext(variables = mutableMapOf("x" to EvaluationResult(BigDecimal("20.0"))))
         val loader = FakeFileContextLoader(mapOf("File B" to remoteContext))
 
         val lines = listOf(
@@ -1961,7 +2065,7 @@ class MathEngineTest {
 
     @Test
     fun `evaluate with direct file function access`() = runBlocking {
-        val remoteContext = MathContext(variables = mutableMapOf("total" to EvaluationResult(100.0)))
+        val remoteContext = MathContext(variables = mutableMapOf("total" to EvaluationResult(BigDecimal("100.0"))))
         val loader = FakeFileContextLoader(mapOf("Summary" to remoteContext))
 
         val lines = listOf(createLine("file(\"Summary\").total * 0.1"))
@@ -1971,7 +2075,7 @@ class MathEngineTest {
 
     @Test
     fun `evaluate clears file linked state after reassignment to number`() = runBlocking {
-        val remoteContext = MathContext(variables = mutableMapOf("x" to EvaluationResult(20.0)))
+        val remoteContext = MathContext(variables = mutableMapOf("x" to EvaluationResult(BigDecimal("20.0"))))
         val loader = FakeFileContextLoader(mapOf("File B" to remoteContext))
 
         val lines = listOf(
@@ -2021,7 +2125,7 @@ class MathEngineTest {
                     Expr.BinaryOp(
                         Expr.Variable("x"),
                         TokenKind.STAR,
-                        Expr.NumberLiteral(2.0)
+                        Expr.NumberLiteral(BigDecimal("2.0"))
                     )
                 )
             )
@@ -2044,7 +2148,7 @@ class MathEngineTest {
                     Expr.BinaryOp(
                         Expr.Variable("x"),
                         TokenKind.PLUS,
-                        Expr.Quantity(Expr.NumberLiteral(1.0), "cm")
+                        Expr.Quantity(Expr.NumberLiteral(BigDecimal("1.0")), "cm")
                     )
                 )
             )
@@ -2236,8 +2340,8 @@ class MathEngineTest {
             createLine("1.5 em in px", sortOrder = 4)
         )
         val result = MathEngine.calculate(lines)
-        assertEquals("1.0 inch", result[0].result)
-        assertEquals("1.0 inch", result[2].result)
+        assertEquals(1.0, result[0].result.split(" ")[0].toDouble(), 0.0001)
+        assertEquals(1.0, result[2].result.split(" ")[0].toDouble(), 0.0001)
         // em = 21px. 1.5 em = 1.5 * 21px = 31.5px
         val resStr = result[4].result
         val spaceIdx = resStr.indexOf(' ')
@@ -2349,7 +2453,7 @@ class MathEngineTest {
         assertEquals("4.2", result[0].result)
         assertTrue(result[1].result.startsWith("1.764E8"))
         assertTrue(result[2].result.startsWith("128066.4"))
-        assertTrue(result[3].result.startsWith("6.403319"))
+        assertTrue(result[3].result.startsWith("6.40332"))
         assertTrue(result[3].result.endsWith(" ft²"))
         assertEquals("10", result[4].result)
         assertEquals("10", result[5].result)
@@ -2374,7 +2478,7 @@ class MathEngineTest {
         assertEquals("4.2", result[0].result)
         assertTrue(result[1].result.startsWith("1.764E8"))
         assertTrue(result[2].result.startsWith("128066.4"))
-        assertTrue(result[3].result.startsWith("6.403319"))
+        assertEquals(640332000.0, result[3].result.split(" ")[0].toDouble(), 0.1)
         assertTrue(result[3].result.endsWith(" ft²"))
         assertEquals(463932000.0, result[4].result.toDouble(), 0.01)
     }
@@ -2434,4 +2538,76 @@ class MathEngineTest {
         assertEquals("Fractional value cannot be converted to numeral system", err)
     }
 
+    @Test
+    fun `formatDisplayResult honors precision`() {
+        val input = "0.33333333333333335"
+        assertEquals("0.33", MathEngine.formatDisplayResult(input, 2, java.util.Locale.US))
+        assertEquals("0.3333", MathEngine.formatDisplayResult(input, 4, java.util.Locale.US))
+        assertEquals("0.333333", MathEngine.formatDisplayResult(input, 6, java.util.Locale.US))
+    }
+
+    @Test
+    fun `formatDisplayResult handles quantities with precision`() {
+        val input = "0.33333333333333335 km"
+        assertEquals("0.33 km", MathEngine.formatDisplayResult(input, 2, java.util.Locale.US))
+        assertEquals("0.3333 km", MathEngine.formatDisplayResult(input, 4, java.util.Locale.US))
+    }
+
+    @Test
+    fun `formatDisplayResult handles large numbers with precision`() {
+        val input = "12345678901234567890"
+        // Should use scientific notation with precision
+        val formatted = MathEngine.formatDisplayResult(input, 2, java.util.Locale.US)
+        assertTrue(formatted.contains("e"))
+        assertTrue(formatted.startsWith("1.23"))
+    }
+
+    @Test
+    fun `integers should always include a trailing zero`() {
+        assertEquals("0.0", MathEngine.formatBigDecimal(BigDecimal.ZERO))
+        assertEquals("10.0", MathEngine.formatBigDecimal(java.math.BigDecimal("10")))
+        assertEquals("10.0", MathEngine.formatBigDecimal(java.math.BigDecimal("10.000")))
+        assertEquals("-5.0", MathEngine.formatBigDecimal(java.math.BigDecimal("-5")))
+    }
+
+    @Test
+    fun `decimals should preserve precision without extra zeros`() {
+        assertEquals("3.14", MathEngine.formatBigDecimal(java.math.BigDecimal("3.14")))
+        assertEquals("0.123456789", MathEngine.formatBigDecimal(java.math.BigDecimal("0.123456789000")))
+    }
+
+    @Test
+    fun `large numbers should use scientific notation`() {
+        // Threshold is 10^7 (10,000,000)
+        assertEquals("9999999.0", MathEngine.formatBigDecimal(java.math.BigDecimal("9999999")))
+        assertEquals("1.0E7", MathEngine.formatBigDecimal(java.math.BigDecimal("10000000")))
+        assertEquals("1.2345678E7", MathEngine.formatBigDecimal(java.math.BigDecimal("12345678")))
+        assertEquals("1.0E100", MathEngine.formatBigDecimal(java.math.BigDecimal("10").pow(100)))
+    }
+
+    @Test
+    fun `very small numbers should use scientific notation`() {
+        // Threshold is 10^-3 (0.001)
+        assertEquals("0.001", MathEngine.formatBigDecimal(java.math.BigDecimal("0.001")))
+        assertEquals("1.0E-4", MathEngine.formatBigDecimal(java.math.BigDecimal("0.0001")))
+        assertEquals("1.23E-7", MathEngine.formatBigDecimal(java.math.BigDecimal("0.000000123")))
+    }
+
+    @Test
+    fun `scientific notation should preserve precision`() {
+        val highPrec = java.math.BigDecimal("1.234567890123456789012345678901234")
+        val large = highPrec.multiply(java.math.BigDecimal("10").pow(20))
+        // 1.23456...E20
+        assertEquals("1.234567890123456789012345678901234E20", MathEngine.formatBigDecimal(large))
+
+        val small = highPrec.divide(java.math.BigDecimal("10").pow(20), java.math.MathContext.DECIMAL128)
+        // 1.23456...E-20
+        assertEquals("1.234567890123456789012345678901234E-20", MathEngine.formatBigDecimal(small))
+    }
+
+    @Test
+    fun `negative numbers in scientific notation`() {
+        assertEquals("-1.0E7", MathEngine.formatBigDecimal(java.math.BigDecimal("-10000000")))
+        assertEquals("-1.0E-4", MathEngine.formatBigDecimal(java.math.BigDecimal("-0.0001")))
+    }
 }

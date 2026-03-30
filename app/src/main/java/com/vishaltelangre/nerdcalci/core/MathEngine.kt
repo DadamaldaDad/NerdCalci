@@ -1,6 +1,8 @@
 package com.vishaltelangre.nerdcalci.core
 
 import com.vishaltelangre.nerdcalci.data.local.entities.LineEntity
+import java.math.BigDecimal
+import java.math.MathContext as JavaMathContext
 import java.util.Locale
 
 /** A user-defined function local to a specific file. */
@@ -12,7 +14,8 @@ data class MathContext(
     val localFunctions: MutableMap<String, LocalFunction> = mutableMapOf(),
     val lineResults: MutableList<EvaluationResult?> = mutableListOf(),
     val userAssignedDynamicVariables: MutableSet<String> = mutableSetOf(),
-    val fileVariables: MutableMap<String, String> = mutableMapOf() // varName -> fileName
+    val fileVariables: MutableMap<String, String> = mutableMapOf(), // varName -> fileName
+    val injectionErrors: MutableMap<String, Exception> = mutableMapOf()
 )
 
 object MathEngine {
@@ -23,22 +26,22 @@ object MathEngine {
      * Each entry maps a keyword name to a function that computes its value based on
      * the current block's line results.
      */
-    private val DYNAMIC_VARIABLES: Map<String, (List<EvaluationResult?>) -> EvaluationResult> = mapOf(
-        "sum"               to ::computeBlockSum,
-        "total"             to ::computeBlockSum,
+    private val DYNAMIC_VARIABLES: Map<String, (List<EvaluationResult?>, Map<String, EvaluationResult>) -> EvaluationResult> = mapOf(
+        "sum"               to { results, vars -> computeBlockSum(results, vars) },
+        "total"             to { results, vars -> computeBlockSum(results, vars) },
 
-        "avg"               to ::computeBlockAverage,
-        "average"           to ::computeBlockAverage,
+        "avg"               to { results, vars -> computeBlockAverage(results, vars) },
+        "average"           to { results, vars -> computeBlockAverage(results, vars) },
 
-        "last"              to ::computePreviousLineResult,
-        "prev"              to ::computePreviousLineResult,
-        "previous"          to ::computePreviousLineResult,
-        "above"             to ::computePreviousLineResult,
-        "_"                 to ::computePreviousLineResult,
+        "last"              to { results, _ -> computePreviousLineResult(results) },
+        "prev"              to { results, _ -> computePreviousLineResult(results) },
+        "previous"          to { results, _ -> computePreviousLineResult(results) },
+        "above"             to { results, _ -> computePreviousLineResult(results) },
+        "_"                 to { results, _ -> computePreviousLineResult(results) },
 
-        "lineno"            to ::computeCurrentLineNumber,
-        "linenumber"        to ::computeCurrentLineNumber,
-        "currentLineNumber" to ::computeCurrentLineNumber
+        "lineno"            to { results, _ -> computeCurrentLineNumber(results) },
+        "linenumber"        to { results, _ -> computeCurrentLineNumber(results) },
+        "currentLineNumber" to { results, _ -> computeCurrentLineNumber(results) }
     )
 
     val EXCLUDED_DOT_NOTATION_VARIABLES = setOf("lineno", "linenumber", "currentLineNumber")
@@ -212,16 +215,23 @@ object MathEngine {
                 val u = if (result.unit != null) UnitConverter.findUnit(result.unit) else null
                 val resultString = if (u != null) {
                     if (u.category == UnitCategory.NUMERAL_SYSTEM) {
-                        if (result.value % 1.0 != 0.0) throw IllegalArgumentException(ERR_FRACTIONAL_NUMERAL_SYSTEM)
-                        formatNumeralSystem(result.value.toLong(), u.factor.toInt())
+                        if (result.value.remainder(BigDecimal.ONE).compareTo(BigDecimal.ZERO) != 0) throw IllegalArgumentException(ERR_FRACTIONAL_NUMERAL_SYSTEM)
+                        // Check if value is within Long range
+                        if (result.value.compareTo(BigDecimal(Long.MIN_VALUE)) < 0 || result.value.compareTo(BigDecimal(Long.MAX_VALUE)) > 0) {
+                            // Out of range, fall back to scientific notation
+                            formatBigDecimal(result.value)
+                        } else {
+                            formatNumeralSystem(result.value.toLong(), u.factor.toInt())
+                        }
                     } else {
                         val displayValue = UnitConverter.fromBase(result.value, u, isolatedContext.variables)
-                        "$displayValue ${result.unit}"
+                        val formattedValue = formatBigDecimal(displayValue)
+                        "$formattedValue ${result.unit}"
                     }
-                } else if (result.explicitUnitless && result.value % 1.0 == 0.0) {
+                } else if (result.explicitUnitless && result.value.remainder(BigDecimal.ONE).compareTo(BigDecimal.ZERO) == 0) {
                     result.value.toLong().toString()
                 } else {
-                    result.value.toString()
+                    formatBigDecimal(result.value)
                 }
                 line.copy(result = resultString)
             } catch (e: Exception) {
@@ -260,38 +270,107 @@ object MathEngine {
     private fun injectDynamicVariables(context: MathContext) {
         for ((name, compute) in DYNAMIC_VARIABLES) {
             if (name !in context.userAssignedDynamicVariables) {
-                context.variables[name] = compute(context.lineResults)
+                context.variables.remove(name)
+                context.injectionErrors.remove(name)
+                try {
+                    context.variables[name] = compute(context.lineResults, context.variables)
+                } catch (e: Exception) {
+                    context.injectionErrors[name] = e
+                }
             }
         }
     }
 
-    /**
-     * Sum the current block's line results, scanning backward from the end of
-     * [lineResults] until a null entry (blank line / comment / error) or the start.
-     */
-    private fun computeBlockSum(lineResults: List<EvaluationResult?>): EvaluationResult {
-        var sum = 0.0
+    private fun computeBlockSum(lineResults: List<EvaluationResult?>, variables: Map<String, EvaluationResult>): EvaluationResult {
+        val blockResults = mutableListOf<EvaluationResult>()
         for (i in lineResults.indices.reversed()) {
             val result = lineResults[i] ?: break
-            sum += result.value ?: 0.0
+            blockResults.add(0, result)
         }
-        return EvaluationResult(sum)
+
+        if (blockResults.isEmpty()) return EvaluationResult(BigDecimal.ZERO)
+
+        // Identify the target unit for this block (the unit of the last line with a unit)
+        var targetUnit: Unit? = null
+        var targetUnitSymbol: String? = null
+        for (i in blockResults.indices.reversed()) {
+            val u = blockResults[i].unit?.let { UnitConverter.findUnit(it) }
+            if (u != null && u.category != UnitCategory.SCALAR) {
+                targetUnit = u
+                targetUnitSymbol = blockResults[i].unit
+                break
+            }
+        }
+
+        var sumValue = BigDecimal.ZERO
+        for (result in blockResults) {
+            val resultValue = result.value ?: BigDecimal.ZERO
+            val resultUnit = result.unit?.let { UnitConverter.findUnit(it) }
+            if (targetUnit != null) {
+                if (resultUnit != null) {
+                    if (resultUnit.category != targetUnit.category && resultUnit.category != UnitCategory.SCALAR) {
+                        throw EvalException("Cannot sum ${resultUnit.name} and ${targetUnit.name}: dimension mismatch")
+                    }
+                    sumValue = sumValue.add(resultValue)
+                } else {
+                    // Result is unitless. Treat as "targetUnit" same as '+' operator.
+                    sumValue = sumValue.add(UnitConverter.toBase(resultValue, targetUnit, variables))
+                }
+            } else {
+                if (resultUnit != null && resultUnit.category != UnitCategory.SCALAR) {
+                    // This shouldn't happen given how we pick targetUnit, but for safety:
+                    return EvaluationResult(null)
+                }
+                sumValue = sumValue.add(resultValue)
+            }
+        }
+
+        return EvaluationResult(sumValue, targetUnitSymbol)
     }
 
-    /**
-     * Average the current block's line results, scanning backward from the end of
-     * [lineResults] until a null entry (blank line / comment / error) or the start.
-     */
-    private fun computeBlockAverage(lineResults: List<EvaluationResult?>): EvaluationResult {
-        var sum = 0.0
-        var count = 0
+    private fun computeBlockAverage(lineResults: List<EvaluationResult?>, variables: Map<String, EvaluationResult>): EvaluationResult {
+        val blockResults = mutableListOf<EvaluationResult>()
         for (i in lineResults.indices.reversed()) {
             val result = lineResults[i] ?: break
-            sum += result.value ?: 0.0
+            blockResults.add(0, result)
+        }
+
+        if (blockResults.isEmpty()) return EvaluationResult(BigDecimal.ZERO)
+
+        // Identify the target unit for this block (the unit of the last line with a unit)
+        var targetUnit: Unit? = null
+        var targetUnitSymbol: String? = null
+        for (i in blockResults.indices.reversed()) {
+            val u = blockResults[i].unit?.let { UnitConverter.findUnit(it) }
+            if (u != null && u.category != UnitCategory.SCALAR) {
+                targetUnit = u
+                targetUnitSymbol = blockResults[i].unit
+                break
+            }
+        }
+
+        var sumValue = BigDecimal.ZERO
+        var count = 0
+        for (result in blockResults) {
+            val resultValue = result.value ?: BigDecimal.ZERO
+            val resultUnit = result.unit?.let { UnitConverter.findUnit(it) }
+            if (targetUnit != null) {
+                if (resultUnit != null) {
+                    if (resultUnit.category != targetUnit.category && resultUnit.category != UnitCategory.SCALAR) {
+                        throw EvalException("Cannot average ${resultUnit.name} and ${targetUnit.name}: dimension mismatch")
+                    }
+                    sumValue = sumValue.add(resultValue)
+                } else {
+                    sumValue = sumValue.add(UnitConverter.toBase(resultValue, targetUnit, variables))
+                }
+            } else {
+                sumValue = sumValue.add(resultValue)
+            }
             count++
         }
-        val avg = if (count > 0) sum / count else 0.0
-        return EvaluationResult(avg)
+
+        val avgValue = if (count > 0) sumValue.divide(BigDecimal(count), JavaMathContext.DECIMAL128) else BigDecimal.ZERO
+        return EvaluationResult(avgValue, targetUnitSymbol)
     }
 
     /**
@@ -299,14 +378,14 @@ object MathEngine {
      * was blank, a comment, or an error.
      */
     private fun computePreviousLineResult(lineResults: List<EvaluationResult?>): EvaluationResult {
-        return lineResults.lastOrNull() ?: EvaluationResult(0.0)
+        return lineResults.lastOrNull() ?: EvaluationResult(BigDecimal.ZERO)
     }
 
     /**
      * Returns the 1-based index of the line currently being evaluated.
      */
     private fun computeCurrentLineNumber(lineResults: List<EvaluationResult?>): EvaluationResult {
-        return EvaluationResult((lineResults.size + 1).toDouble())
+        return EvaluationResult(BigDecimal(lineResults.size + 1))
     }
 
     /**
@@ -332,6 +411,7 @@ object MathEngine {
 
         return Evaluator(
             variables = context.variables,
+            injectionErrors = context.injectionErrors,
             localFunctions = context.localFunctions,
             fileVariables = context.fileVariables,
             fileContextLoader = loader,
@@ -350,14 +430,14 @@ object MathEngine {
             rawResult to ""
         }
 
-        val value = numStr.toDoubleOrNull() ?: return rawResult
+        val value = numStr.toBigDecimalOrNull() ?: return rawResult
         val safePrecision = precision.coerceIn(Constants.MIN_PRECISION, Constants.MAX_PRECISION)
 
         val trimmedUnit = unitStr.trim().lowercase()
         val isNumeralSystem = UnitConverter.isNumeralSystemSymbol(trimmedUnit)
 
         val formattedResult = if (isNumeralSystem) {
-            if (value % 1.0 != 0.0) return "Err"
+            if (value.remainder(BigDecimal.ONE).compareTo(BigDecimal.ZERO) != 0) return "Err"
             val radix = when (trimmedUnit) {
                 "bin" -> 2
                 "hex" -> 16
@@ -365,20 +445,42 @@ object MathEngine {
                 else -> 10
             }
             formatNumeralSystem(value.toLong(), radix)
-        } else if (value % 1.0 == 0.0) {
+        } else if (value.remainder(BigDecimal.ONE).compareTo(BigDecimal.ZERO) == 0) {
+            val longVal = value.toLong()
             when {
-                value >= Int.MIN_VALUE && value <= Int.MAX_VALUE ->
-                    value.toInt().toString()
-                value >= Long.MIN_VALUE && value <= Long.MAX_VALUE ->
-                    value.toLong().toString()
+                value.compareTo(BigDecimal(Int.MIN_VALUE)) >= 0 && value.compareTo(BigDecimal(Int.MAX_VALUE)) <= 0 ->
+                    longVal.toInt().toString()
+                value.compareTo(BigDecimal(Long.MIN_VALUE)) >= 0 && value.compareTo(BigDecimal(Long.MAX_VALUE)) <= 0 ->
+                    longVal.toString()
                 else ->
-                    "%.${safePrecision}e".format(locale, value)
+                    "%.${safePrecision}e".format(locale, value.toDouble())
             }
         } else {
-            "%.${safePrecision}f".format(locale, value)
+            "%.${safePrecision}f".format(locale, value.toDouble())
         }
 
         return if (isNumeralSystem) formattedResult else formattedResult + unitStr
+    }
+
+    /** Helper to format BigDecimal like Double for integers but with BigDecimal's precision for decimals. */
+    internal fun formatBigDecimal(value: BigDecimal): String {
+        val stz = value.stripTrailingZeros()
+        val absoluteValue = stz.abs()
+
+        if (absoluteValue >= BigDecimal("10000000") || (absoluteValue < BigDecimal("0.001") && absoluteValue > BigDecimal.ZERO)) {
+            // High-precision scientific notation
+            val scale = stz.precision() - stz.scale() - 1
+            val unscaled = stz.movePointLeft(scale).stripTrailingZeros()
+            var s = unscaled.toPlainString()
+            if (!s.contains('.')) s += ".0"
+            return s + "E" + scale
+        }
+
+        var s = stz.toPlainString()
+        if (!s.contains('.') && !s.contains('E')) {
+            s += ".0"
+        }
+        return s
     }
 
     private fun formatNumeralSystem(value: Long, radix: Int): String {
