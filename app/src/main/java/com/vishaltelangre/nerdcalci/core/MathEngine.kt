@@ -4,6 +4,8 @@ import com.vishaltelangre.nerdcalci.data.local.entities.LineEntity
 import java.math.BigDecimal
 import java.math.MathContext as JavaMathContext
 import java.util.Locale
+import com.vishaltelangre.nerdcalci.core.Rational
+import com.vishaltelangre.nerdcalci.utils.RegionUtils
 
 /** A user-defined function local to a specific file. */
 data class LocalFunction(val name: String, val params: List<String>, val body: List<Statement>)
@@ -15,7 +17,8 @@ data class MathContext(
     val lineResults: MutableList<EvaluationResult?> = mutableListOf(),
     val userAssignedDynamicVariables: MutableSet<String> = mutableSetOf(),
     val fileVariables: MutableMap<String, String> = mutableMapOf(), // varName -> fileName
-    val injectionErrors: MutableMap<String, Exception> = mutableMapOf()
+    val injectionErrors: MutableMap<String, Exception> = mutableMapOf(),
+    val rationalMode: Boolean = false
 )
 
 object MathEngine {
@@ -45,6 +48,20 @@ object MathEngine {
     )
 
     val EXCLUDED_DOT_NOTATION_VARIABLES = setOf("lineno", "linenumber", "currentLineNumber")
+
+    /**
+     * Set of separators that are considered "safe" for Western-style calculation results.
+     * Includes standard dot, comma, apostrophes, and various whitespace grouping separators.
+     */
+    internal val SAFE_SEPARATORS = setOf(
+        '.',      // Dot (Decimal/Grouping)
+        ',',      // Comma (Decimal/Grouping)
+        ' ',      // Standard Space (Grouping)
+        '\u00A0', // Non-Breaking Space (Grouping)
+        '\u202F', // Narrow Non-Breaking Space (Grouping)
+        '\'',     // Single Apostrophe (Grouping - e.g. Switzerland)
+        '\u2019'  // Right Single Quotation Mark (Grouping - e.g. Switzerland)
+    )
 
     private val RESERVED_DYNAMIC_VARIABLES = TokenKind.entries
         .filter { it.isPreviousLineAlias || it.isLineNumberAlias }
@@ -87,8 +104,8 @@ object MathEngine {
      * @param lines List of line entities to calculate
      * @return List of line entities with populated results
      */
-    suspend fun calculate(lines: List<LineEntity>, loader: FileContextLoader? = null): List<LineEntity> {
-        return calculateWithContext(lines, MathContext(), loader)
+    suspend fun calculate(lines: List<LineEntity>, loader: FileContextLoader? = null, rationalMode: Boolean = false): List<LineEntity> {
+        return calculateWithContext(lines, MathContext(rationalMode = rationalMode), loader)
     }
 
     /**
@@ -100,9 +117,10 @@ object MathEngine {
     suspend fun buildVariableState(
         lines: List<LineEntity>,
         loader: FileContextLoader? = null,
-        loadingStack: Set<String> = emptySet()
+        loadingStack: Set<String> = emptySet(),
+        rationalMode: Boolean = false
     ): MathContext {
-        val context = MathContext()
+        val context = MathContext(rationalMode = rationalMode)
         for (line in lines) {
             if (line.expression.isBlank()) {
                 context.lineResults.add(null)
@@ -133,7 +151,7 @@ object MathEngine {
      * @param changedIndex  Index of the first line that changed (0-based).
      * @return Recalculated affected lines: `allLines[changedIndex..end]` with updated results.
      */
-    suspend fun calculateFrom(allLines: List<LineEntity>, changedIndex: Int, loader: FileContextLoader? = null, loadingStack: Set<String> = emptySet()): List<LineEntity> {
+    suspend fun calculateFrom(allLines: List<LineEntity>, changedIndex: Int, loader: FileContextLoader? = null, loadingStack: Set<String> = emptySet(), rationalMode: Boolean = false): List<LineEntity> {
         // Determine which lines are affected by the edit
         val firstAffectedIndex = changedIndex.coerceIn(0, allLines.size)
         val precedingLines = allLines.subList(0, firstAffectedIndex)
@@ -142,10 +160,10 @@ object MathEngine {
         try {
             // Collect variable state and line results from preceding lines,
             // then fully recalculate affected lines
-            val context = buildVariableState(precedingLines, loader, loadingStack)
+            val context = buildVariableState(precedingLines, loader, loadingStack, rationalMode)
             return calculateWithContext(affectedLines, context, loader, loadingStack)
         } catch (e: CircularReferenceException) {
-            return calculateWithContext(allLines, MathContext(), loader, loadingStack)
+            return calculateWithContext(allLines, MathContext(rationalMode = rationalMode), loader, loadingStack)
         }
     }
 
@@ -153,14 +171,14 @@ object MathEngine {
      * Re-evaluates a specific line to capture the exact exception message.
      * Used for on-demand error tooltips.
      */
-    suspend fun getErrorDetails(allLines: List<LineEntity>, targetIndex: Int, loader: FileContextLoader? = null, loadingStack: Set<String> = emptySet()): String? {
+    suspend fun getErrorDetails(allLines: List<LineEntity>, targetIndex: Int, loader: FileContextLoader? = null, loadingStack: Set<String> = emptySet(), rationalMode: Boolean = false): String? {
         if (targetIndex < 0 || targetIndex >= allLines.size) return null
 
         val precedingLines = allLines.subList(0, targetIndex)
         val targetLine = allLines[targetIndex]
 
         try {
-            val context = buildVariableState(precedingLines, loader, loadingStack)
+            val context = buildVariableState(precedingLines, loader, loadingStack, rationalMode)
             injectDynamicVariables(context)
             evaluateLine(targetLine.expression, context, loader, loadingStack)
             return null // No error occurred during this evaluation
@@ -187,7 +205,7 @@ object MathEngine {
         val lineResults = context.lineResults
         val userAssignedDynamicVariables = context.userAssignedDynamicVariables.toMutableSet()
         val fileVariables = context.fileVariables.toMutableMap()
-        val isolatedContext = MathContext(variables, localFunctions, lineResults, userAssignedDynamicVariables, fileVariables)
+        val isolatedContext = MathContext(variables, localFunctions, lineResults, userAssignedDynamicVariables, fileVariables, rationalMode = context.rationalMode)
 
         return lines.map { line ->
             if (line.expression.isBlank()) {
@@ -225,11 +243,17 @@ object MathEngine {
                         }
                     } else {
                         val displayValue = UnitConverter.fromBase(result.value, u, isolatedContext.variables)
-                        val formattedValue = formatBigDecimal(displayValue)
+                        val formattedValue = if (!result.forceFloat && (isolatedContext.rationalMode || result.explicitRational)) {
+                            Rational.toRational(displayValue).toString()
+                        } else {
+                            formatBigDecimal(displayValue)
+                        }
                         "$formattedValue ${result.unit}"
                     }
                 } else if (result.explicitUnitless && result.value.remainder(BigDecimal.ONE).compareTo(BigDecimal.ZERO) == 0) {
                     result.value.toLong().toString()
+                } else if (!result.forceFloat && (isolatedContext.rationalMode || result.explicitRational) && result.rationalValue != null) {
+                    result.rationalValue.toString()
                 } else {
                     formatBigDecimal(result.value)
                 }
@@ -415,7 +439,8 @@ object MathEngine {
             localFunctions = context.localFunctions,
             fileVariables = context.fileVariables,
             fileContextLoader = loader,
-            loadingStack = loadingStack
+            loadingStack = loadingStack,
+            rationalMode = context.rationalMode
         ).evaluateStatement(statement, context)
     }
 
@@ -423,10 +448,14 @@ object MathEngine {
     fun formatDisplayResult(
         rawResult: String,
         precision: Int,
-        locale: Locale = Locale.getDefault(),
-        settings: NumberFormatSettings = NumberFormatSettings()
+        systemLocale: Locale = Locale.getDefault(),
+        regionCode: String = RegionUtils.SYSTEM_DEFAULT,
+        groupingSeparatorEnabled: Boolean = true
     ): String {
         if (rawResult.isBlank() || rawResult == "Err") return rawResult
+
+        val locale = RegionUtils.getLocaleForRegion(regionCode, systemLocale)
+
 
         val spaceIndex = rawResult.indexOf(' ')
         val (numStr, unitStr) = if (spaceIndex > 0) {
@@ -450,20 +479,16 @@ object MathEngine {
                 else -> 10
             }
             formatNumeralSystem(value.toLong(), radix)
-        } else if (numStr.contains('E', ignoreCase = true)) {
+        } else if (numStr.contains('E', ignoreCase = true) ||
+                   value.abs() >= BigDecimal("1000000000000000") || // 10^15, reasonable threshold before Long range end
+                   (value.abs() < BigDecimal("0.001") && value.abs() > BigDecimal.ZERO)) {
             formatScientific(value, safePrecision, locale)
-        } else if (value.remainder(BigDecimal.ONE).compareTo(BigDecimal.ZERO) == 0) {
-            val longVal = value.toLong()
-            when {
-                value.compareTo(BigDecimal(Int.MIN_VALUE)) >= 0 && value.compareTo(BigDecimal(Int.MAX_VALUE)) <= 0 ->
-                    formatInteger(longVal.toInt().toLong(), locale, settings)
-                value.compareTo(BigDecimal(Long.MIN_VALUE)) >= 0 && value.compareTo(BigDecimal(Long.MAX_VALUE)) <= 0 ->
-                    formatInteger(longVal, locale, settings)
-                else ->
-                    formatScientific(value, safePrecision, locale)
-            }
         } else {
-            formatDecimal(value, safePrecision, locale, settings)
+            val useIndianStyle = regionCode == "IN" ||
+                    (regionCode == RegionUtils.SYSTEM_DEFAULT && locale.country == "IN")
+            val isWholeNumber = value.remainder(BigDecimal.ONE).compareTo(BigDecimal.ZERO) == 0
+            val forcePrecision = !isWholeNumber // Only force trailing zeros for actual decimals
+            formatLocalized(value, safePrecision, locale, alwaysDecimal = false, forcePrecision = forcePrecision, useIndianStyle = useIndianStyle, groupingSeparatorEnabled = groupingSeparatorEnabled)
         }
 
         return if (isNumeralSystem) formattedResult else formattedResult + unitStr
@@ -474,7 +499,7 @@ object MathEngine {
         val stz = value.stripTrailingZeros()
         val absoluteValue = stz.abs()
 
-        if (absoluteValue >= BigDecimal("10000000") || (absoluteValue < BigDecimal("0.001") && absoluteValue > BigDecimal.ZERO)) {
+        if (absoluteValue >= BigDecimal("1000000000000000") || (absoluteValue < BigDecimal("0.00001") && absoluteValue > BigDecimal.ZERO)) {
             // High-precision scientific notation
             val scale = stz.precision() - stz.scale() - 1
             val unscaled = stz.movePointLeft(scale).stripTrailingZeros()
@@ -490,46 +515,85 @@ object MathEngine {
         return s
     }
 
-    private fun formatInteger(value: Long, locale: Locale, settings: NumberFormatSettings): String {
-        return formatDecimalParts(value.toString(), null, locale, settings, alwaysDecimal = false)
+    private fun getSafeSymbols(locale: Locale, groupingSeparatorEnabled: Boolean = true): java.text.DecimalFormatSymbols {
+        var symbols = java.text.DecimalFormatSymbols.getInstance(locale)
+
+        if (!SAFE_SEPARATORS.contains(symbols.decimalSeparator) ||
+            (groupingSeparatorEnabled && !SAFE_SEPARATORS.contains(symbols.groupingSeparator))
+        ) {
+            // Fallback to English version of the region's locale to ensure Western-style separators.
+            symbols = java.text.DecimalFormatSymbols.getInstance(Locale("en", locale.country))
+        }
+
+        // Always force Western digits (0-9)
+        symbols.zeroDigit = '0'
+        return symbols
     }
 
-    private fun formatDecimal(value: BigDecimal, precision: Int, locale: Locale, settings: NumberFormatSettings): String {
-        // Use BigDecimal.setScale to avoid precision loss from toDouble()
-        val rounded = value.setScale(precision, java.math.RoundingMode.HALF_UP)
-        val plainString = rounded.toPlainString()
-        val parts = plainString.split('.', limit = 2)
-        return formatDecimalParts(parts[0], parts.getOrNull(1), locale, settings, alwaysDecimal = false)
-    }
-
-    private fun formatDecimalParts(
-        integerPart: String,
-        decimalPart: String?,
+    private fun formatLocalized(
+        value: BigDecimal,
+        precision: Int,
         locale: Locale,
-        settings: NumberFormatSettings,
-        alwaysDecimal: Boolean
+        alwaysDecimal: Boolean,
+        forcePrecision: Boolean = false,
+        useIndianStyle: Boolean = false,
+        groupingSeparatorEnabled: Boolean = true
     ): String {
-        val useGrouping = settings.separators != NumberSeparatorPreset.OFF
+        val symbols = getSafeSymbols(locale, groupingSeparatorEnabled)
 
-        val groupingSeparator = when (settings.separators) {
-            NumberSeparatorPreset.LOCALE -> java.text.DecimalFormatSymbols.getInstance(locale).groupingSeparator
-            NumberSeparatorPreset.COMMA -> ','
-            NumberSeparatorPreset.DOT -> '.'
-            NumberSeparatorPreset.SPACE -> ' '
-            NumberSeparatorPreset.OFF -> java.text.DecimalFormatSymbols.getInstance(locale).groupingSeparator
-        }
-        val decimalSeparator = when (settings.decimal) {
-            NumberDecimalPreset.LOCALE -> java.text.DecimalFormatSymbols.getInstance(locale).decimalSeparator
-            NumberDecimalPreset.COMMA -> ','
-            NumberDecimalPreset.DOT -> '.'
+        if (useIndianStyle) {
+            val rounded = value.setScale(precision, java.math.RoundingMode.HALF_UP)
+            val s = rounded.toPlainString()
+            val parts = s.split('.', limit = 2)
+            val integerPart = parts[0]
+            val decimalPart = parts.getOrNull(1)
+
+            val sign = if (integerPart.startsWith('-')) "-" else ""
+            val unsigned = integerPart.removePrefix("-")
+            val groupedInteger = if (groupingSeparatorEnabled) {
+                formatIndianStyle(unsigned, symbols.groupingSeparator)
+            } else {
+                unsigned
+            }
+
+            val formattedDecimal = when {
+                forcePrecision -> {
+                    val dp = decimalPart ?: "0".repeat(precision.coerceAtLeast(1))
+                    "${symbols.decimalSeparator}$dp"
+                }
+                alwaysDecimal -> {
+                    val dp = if (decimalPart.isNullOrEmpty()) "0" else decimalPart
+                    "${symbols.decimalSeparator}$dp"
+                }
+                !decimalPart.isNullOrEmpty() && decimalPart.any { it != '0' } -> {
+                    "${symbols.decimalSeparator}$decimalPart"
+                }
+                else -> ""
+            }
+
+            return sign + groupedInteger + formattedDecimal
         }
 
-        val sign = if (integerPart.startsWith('-')) "-" else ""
-        val unsigned = integerPart.removePrefix("-")
-        val groupedInteger = if (useGrouping) unsigned.reversed().chunked(3).joinToString(groupingSeparator.toString()).reversed() else unsigned
-        val dec = decimalPart?.let { if (it.isNotEmpty()) "$decimalSeparator$it" else "" } ?: if (alwaysDecimal) "${decimalSeparator}0" else ""
-        return sign + groupedInteger + dec
+        val formatter = java.text.DecimalFormat()
+        formatter.decimalFormatSymbols = symbols
+        formatter.isGroupingUsed = groupingSeparatorEnabled
+        formatter.maximumFractionDigits = precision
+        formatter.minimumFractionDigits = if (forcePrecision) precision else if (alwaysDecimal) 1 else 0
+
+        return formatter.format(value)
     }
+
+    private fun formatIndianStyle(unsigned: String, separator: Char): String {
+        if (unsigned.length <= 3) return unsigned
+
+        val reversed = unsigned.reversed()
+        val first3 = reversed.substring(0, 3)
+        val rest = reversed.substring(3)
+        val groupedRest = rest.chunked(2).joinToString(separator.toString())
+
+        return (first3 + separator + groupedRest).reversed()
+    }
+
 
     private fun formatScientific(value: BigDecimal, precision: Int, locale: Locale): String {
         val exponent = value.precision() - value.scale() - 1
@@ -543,7 +607,8 @@ object MathEngine {
         }
 
         val mantissaString = mantissa.toPlainString()
-        val decimalSeparator = java.text.DecimalFormatSymbols.getInstance(locale).decimalSeparator
+        val symbols = getSafeSymbols(locale, groupingSeparatorEnabled = false)
+        val decimalSeparator = symbols.decimalSeparator
         val localizedMantissa = if (decimalSeparator == '.') {
             mantissaString
         } else {
@@ -552,6 +617,7 @@ object MathEngine {
 
         return "${localizedMantissa}E$adjustedExponent"
     }
+
 
     private fun formatNumeralSystem(value: Long, radix: Int): String {
         val prefix = when (radix) {

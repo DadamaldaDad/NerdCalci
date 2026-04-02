@@ -13,7 +13,6 @@ import com.vishaltelangre.nerdcalci.core.MathEngine
 import com.vishaltelangre.nerdcalci.core.MathContext
 import com.vishaltelangre.nerdcalci.utils.FileUtils
 import com.vishaltelangre.nerdcalci.utils.FileMetadata
-import com.vishaltelangre.nerdcalci.utils.ParsedFileContent
 import io.mockk.*
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
@@ -25,6 +24,7 @@ import org.junit.Before
 import org.junit.Test
 import org.json.JSONObject
 import org.json.JSONTokener
+import org.junit.Assert.assertNotEquals
 import java.io.ByteArrayInputStream
 import java.io.OutputStream
 import java.util.Collections
@@ -46,8 +46,8 @@ class SyncManagerTest {
         mockkObject(MathEngine)
         mockkObject(FileUtils)
         every { FileUtils.readMetadataHeader(any<java.io.BufferedReader>()) } answers { callOriginal() }
-        every { FileUtils.formatFileContent(any(), any(), any()) } answers { callOriginal() }
         every { FileUtils.parseFileContent(any()) } answers { callOriginal() }
+        coEvery { FileUtils.formatCanonicalFileContent(any(), any()) } answers { callOriginal() }
         // Keep calculateHash mocked for speed/determinism
         every { FileUtils.calculateHash(any<String>()) } answers {
             val s = it.invocation.args[0] as String
@@ -108,7 +108,7 @@ class SyncManagerTest {
         val result = SyncManager.performSync(context, dao)
 
         assertTrue(result.isSuccess)
-        verify(exactly = 0) { FileUtils.formatFileContent(any(), any(), any()) }
+        coVerify(exactly = 0) { FileUtils.formatCanonicalFileContent(any(), any()) }
         verify(exactly = 0) { contentResolver.openOutputStream(any<Uri>()) }
         verify(exactly = 0) { contentResolver.openOutputStream(any<Uri>(), any()) }
     }
@@ -141,7 +141,7 @@ class SyncManagerTest {
         )
 
         val metadataSlot = slot<FileMetadata>()
-        every { FileUtils.formatFileContent(any(), any(), capture(metadataSlot)) } answers { callOriginal() }
+        coEvery { FileUtils.formatCanonicalFileContent(any(), capture(metadataSlot)) } answers { callOriginal() }
 
         val result = SyncManager.performSync(context, dao)
 
@@ -153,7 +153,128 @@ class SyncManagerTest {
         assertTrue(metadata.isPinned)
         assertEquals(1234L, metadata.lastModified)
         assertEquals(1234L, metadata.createdAt)
-        verify(atLeast = 1) { FileUtils.formatFileContent(any(), any(), any()) }
+        coVerify(atLeast = 1) { FileUtils.formatCanonicalFileContent(any(), any()) }
+    }
+
+    @Test
+    fun `performSync uses canonical content independent of precision setting`() = runBlocking {
+        every { prefs.getBoolean(SyncManager.PREF_SYNC_ENABLED, false) } returns true
+        every { prefs.getString(SyncManager.PREF_SYNC_FOLDER_URI, null) } returns "content://mock"
+        every { prefs.getAll() } returns emptyMap()
+        every { folder.listFiles() } returns emptyArray()
+
+        dao.files.add(
+            FileEntity(
+                id = 1L,
+                name = "Precision",
+                syncId = "",
+                lastModified = 1234L,
+                createdAt = 1234L,
+                isPinned = false
+            )
+        )
+        dao.lines.add(
+            LineEntity(
+                id = 1L,
+                fileId = 1L,
+                sortOrder = 0,
+                expression = "10 / 3",
+                result = "3.333333333333333333"
+            )
+        )
+
+        val contentSlot = slot<String>()
+        every { FileUtils.calculateHash(capture(contentSlot)) } answers { "hash" }
+
+        SyncManager.performSync(context, dao)
+        val canonicalContent = contentSlot.captured
+
+        assertTrue(canonicalContent.contains("""{"result":"3.333333333333333333"}"""))
+        assertNotEquals(canonicalContent, FileUtils.formatFileBody(dao.lines, 2))
+    }
+
+    @Test
+    fun `performSync preserves explicit rational stored result`() = runBlocking {
+        every { prefs.getBoolean(SyncManager.PREF_SYNC_ENABLED, false) } returns true
+        every { prefs.getBoolean(com.vishaltelangre.nerdcalci.core.Constants.SYNC_ENGINE_RATIONAL_MODE, false) } returns true
+        every { prefs.getString(SyncManager.PREF_SYNC_FOLDER_URI, null) } returns "content://mock"
+        every { prefs.getAll() } returns emptyMap()
+        every { folder.listFiles() } returns emptyArray()
+
+        dao.files.add(
+            FileEntity(
+                id = 1L,
+                name = "Rational",
+                syncId = "rational-id",
+                lastModified = 1234L,
+                createdAt = 1234L,
+                isPinned = false
+            )
+        )
+        dao.lines.add(
+            LineEntity(
+                id = 1L,
+                fileId = 1L,
+                sortOrder = 0,
+                expression = "rational(1 / 3)",
+                result = "1/3"
+            )
+        )
+
+        val outputOffSlot = slot<String>()
+        every { FileUtils.calculateHash(capture(outputOffSlot)) } answers { "hash" }
+
+        SyncManager.performSync(context, dao)
+
+        assertEquals(
+            """rational(1 / 3) # {"result":"1/3"}""",
+            outputOffSlot.captured
+        )
+
+        val outputOnSlot = slot<String>()
+        every { FileUtils.calculateHash(capture(outputOnSlot)) } answers { "hash" }
+
+        SyncManager.performSync(context, dao)
+
+        assertEquals(outputOffSlot.captured, outputOnSlot.captured)
+    }
+
+    @Test
+    fun `performSync serializes plain fractional result as decimal`() = runBlocking {
+        every { prefs.getBoolean(SyncManager.PREF_SYNC_ENABLED, false) } returns true
+        every { prefs.getString(SyncManager.PREF_SYNC_FOLDER_URI, null) } returns "content://mock"
+        every { prefs.getAll() } returns emptyMap()
+        every { folder.listFiles() } returns emptyArray()
+
+        dao.files.add(
+            FileEntity(
+                id = 1L,
+                name = "Decimal",
+                syncId = "decimal-id",
+                lastModified = 1234L,
+                createdAt = 1234L,
+                isPinned = false
+            )
+        )
+        dao.lines.add(
+            LineEntity(
+                id = 1L,
+                fileId = 1L,
+                sortOrder = 0,
+                expression = "1 / 3",
+                result = "0.3333333333333333333333333333333333"
+            )
+        )
+
+        val contentSlot = slot<String>()
+        every { FileUtils.calculateHash(capture(contentSlot)) } answers { "hash" }
+
+        SyncManager.performSync(context, dao)
+
+        assertEquals(
+            """1 / 3 # {"result":"0.3333333333333333333333333333333333"}""",
+            contentSlot.captured
+        )
     }
 
     @Test
@@ -373,7 +494,7 @@ class SyncManagerTest {
 
         every { FileUtils.readMetadataHeader(any<java.io.BufferedReader>()) } returns FileMetadata(id = null, lastModified = 1000L)
 
-        every { FileUtils.parseFileContent(any()) } returns ParsedFileContent(
+        every { FileUtils.parseFileContent(any()) } returns com.vishaltelangre.nerdcalci.utils.ParsedFileContent(
             expressions = listOf("1+1"),
             metadata = FileMetadata(id = null, lastModified = 1000L)
         )

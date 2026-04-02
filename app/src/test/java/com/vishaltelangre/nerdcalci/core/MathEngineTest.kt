@@ -9,6 +9,55 @@ import java.util.Locale
 
 class MathEngineTest {
 
+    private val indianSettings = "IN"
+    private val defaultSettings = "US" // Explicitly test generic grouping
+
+    @Test
+    fun `formatDisplayResult supports Indian style grouping`() {
+        val locale = Locale.US
+
+        // 1 hundred
+        assertEquals("100", MathEngine.formatDisplayResult("100", 2, locale, indianSettings))
+
+        // 1 thousand
+        assertEquals("1,000", MathEngine.formatDisplayResult("1000", 2, locale, indianSettings))
+
+        // 10 thousand
+        assertEquals("10,000", MathEngine.formatDisplayResult("10000", 2, locale, indianSettings))
+
+        // 1 lakh
+        assertEquals("1,00,000", MathEngine.formatDisplayResult("100000", 2, locale, indianSettings))
+
+        // 10 lakh
+        assertEquals("10,00,000", MathEngine.formatDisplayResult("1000000", 2, locale, indianSettings))
+
+        // 1 crore
+        assertEquals("1,00,00,000", MathEngine.formatDisplayResult("10000000", 2, locale, indianSettings))
+
+        // 10 crore
+        assertEquals("10,00,00,000", MathEngine.formatDisplayResult("100000000", 2, locale, indianSettings))
+
+        // 100 crore
+        assertEquals("1,00,00,00,000", MathEngine.formatDisplayResult("1000000000", 2, locale, indianSettings))
+
+        // 1,000 crore
+        assertEquals("10,00,00,00,000", MathEngine.formatDisplayResult("10000000000", 2, locale, indianSettings))
+
+        // 1 lakh crore
+        assertEquals("10,00,00,00,00,000", MathEngine.formatDisplayResult("1000000000000", 2, locale, indianSettings))
+
+        // Mixed digits
+        assertEquals("12,34,567.89", MathEngine.formatDisplayResult("1234567.89", 2, locale, indianSettings))
+    }
+
+    @Test
+    fun `formatDisplayResult respects useIndianStyle flag`() {
+        val locale = Locale.US
+        val value = "1000000"
+        assertEquals("1,000,000", MathEngine.formatDisplayResult(value, 2, locale, defaultSettings))
+        assertEquals("10,00,000", MathEngine.formatDisplayResult(value, 2, locale, indianSettings))
+    }
+
     private fun createLine(expression: String, fileId: Long = 1L, sortOrder: Int = 0): LineEntity {
         return LineEntity(id = sortOrder.toLong(), fileId = fileId, expression = expression, result = "", sortOrder = sortOrder)
     }
@@ -219,12 +268,12 @@ class MathEngineTest {
 
         assertEquals("5000.0", result[0].result)
         assertEquals("2500000.0", result[1].result)
-        assertEquals("1.5E7", result[2].result)
+        assertEquals("15000000.0", result[2].result)
         assertEquals("205000.0", result[3].result)
         assertEquals("50000.0", result[4].result)
         assertEquals("150.0", result[5].result)
-        assertEquals("1.0E9", result[6].result)
-        assertEquals("1.0E12", result[7].result)
+        assertEquals("1000000000.0", result[6].result)
+        assertEquals("1000000000000.0", result[7].result)
         assertEquals("450.0 crore", result[8].result)
         assertEquals("200.0 thousand", result[9].result)
         assertEquals("5.0 km", result[10].result)
@@ -632,7 +681,7 @@ class MathEngineTest {
     fun `large integer within Long range is returned correctly`() = runBlocking {
         val lines = listOf(createLine("1000000000 * 2"))
         val result = MathEngine.calculate(lines)
-        assertEquals("2.0E9", result[0].result)
+        assertEquals("2000000000.0", result[0].result)
     }
 
     @Test
@@ -1851,45 +1900,51 @@ class MathEngineTest {
     }
 
     @Test
-    fun `formatDisplayResult can disable separators with explicit off preset`() = runBlocking {
-        val settings = NumberFormatSettings(separators = NumberSeparatorPreset.OFF)
-        assertEquals("1234567", MathEngine.formatDisplayResult("1234567", 2, java.util.Locale.US, settings))
+    fun `formatDisplayResult respects region override for separators`() = runBlocking {
+        assertEquals("1,234,567", MathEngine.formatDisplayResult("1234567", 2, java.util.Locale.FRANCE, "US"))
     }
 
     @Test
-    fun `formatDisplayResult respects system locale for french style`() = runBlocking {
-        val settings = NumberFormatSettings(
-            separators = NumberSeparatorPreset.LOCALE,
-            decimal = NumberDecimalPreset.LOCALE
-        )
-        assertEquals("1\u202F234,57", MathEngine.formatDisplayResult("1234.567", 2, java.util.Locale.FRANCE, settings))
+    fun `formatDisplayResult respects region for french style`() = runBlocking {
+        // Note: France uses non-breaking space (narrow non-breaking space \u202F) as separator
+        assertEquals("1\u202F234,57", MathEngine.formatDisplayResult("1234.567", 2, java.util.Locale.US, "FR"))
     }
 
     @Test
-    fun `formatDisplayResult respects explicit comma and dot settings`() = runBlocking {
-        val settings = NumberFormatSettings(
-            separators = NumberSeparatorPreset.COMMA,
-            decimal = NumberDecimalPreset.DOT
-        )
-        assertEquals("1,234.57", MathEngine.formatDisplayResult("1234.567", 2, java.util.Locale.FRANCE, settings))
+    fun `formatDisplayResult respects explicit US and DE region overrides`() = runBlocking {
+        assertEquals("1,234.57", MathEngine.formatDisplayResult("1234.567", 2, java.util.Locale.GERMANY, "US"))
+
+        assertEquals("1.234,57", MathEngine.formatDisplayResult("1234.567", 2, java.util.Locale.US, "DE"))
     }
 
     @Test
-    fun `formatDisplayResult respects explicit dot and comma settings`() = runBlocking {
-        val settings = NumberFormatSettings(
-            separators = NumberSeparatorPreset.DOT,
-            decimal = NumberDecimalPreset.COMMA
-        )
-        assertEquals("1.234,57", MathEngine.formatDisplayResult("1234.567", 2, java.util.Locale.US, settings))
-    }
+    fun `formatDisplayResult implements smart regional formatting with non-standard separator fallbacks`() = runBlocking {
+        val value = "1234567.89"
 
-    @Test
-    fun `formatDisplayResult respects explicit decimal preset independently`() = runBlocking {
-        val settings = NumberFormatSettings(
-            separators = NumberSeparatorPreset.OFF,
-            decimal = NumberDecimalPreset.COMMA
-        )
-        assertEquals("1234,50", MathEngine.formatDisplayResult("1234.5", 2, java.util.Locale.US, settings))
+        // Bahrain (BH) - Should fallback to Western symbols (en_BH) to avoid mixing Arabic symbols
+        val bhLocale = Locale("ar", "BH")
+        assertEquals("1,234,567.89", MathEngine.formatDisplayResult(value, 2, bhLocale, "BH"))
+
+        // Germany (DE) - Should keep native de_DE symbols (dot grouping, comma decimal)
+        val deLocale = Locale("de", "DE")
+        assertEquals("1.234.567,89", MathEngine.formatDisplayResult(value, 2, deLocale, "DE"))
+
+        // France (FR) - Should keep native fr_FR symbols (space grouping, comma decimal)
+        val frLocale = Locale("fr", "FR")
+        val frResult = MathEngine.formatDisplayResult(value, 2, frLocale, "FR")
+        assertTrue(frResult.contains('\u00A0') || frResult.contains('\u202F') || frResult.contains(' '))
+        assertTrue(frResult.endsWith(",89"))
+
+        // India (IN) - Should keep custom Indian style with Western comma
+        val inLocale = Locale("hi", "IN")
+        assertEquals("12,34,567.89", MathEngine.formatDisplayResult(value, 2, inLocale, "IN"))
+
+        // Switzerland (CH) - Should keep native apostrophe separator
+        val chLocale = Locale("de", "CH")
+        val chResult = MathEngine.formatDisplayResult(value, 2, chLocale, "CH")
+        assertTrue(chResult.any { it in setOf('\'', '\u2019', '.', ',') })
+        // de_CH uses the smart quote ’ (U+2019) as grouping separator
+        assertEquals("1\u2019234\u2019567.89", chResult)
     }
 
     @Test
@@ -2584,9 +2639,9 @@ class MathEngineTest {
         )
         val result = MathEngine.calculate(lines)
         assertEquals("4.2", result[0].result)
-        assertTrue(result[1].result.startsWith("1.764E8"))
+        assertEquals("176400000.0", result[1].result)
         assertTrue(result[2].result.startsWith("128066.4"))
-        assertTrue(result[3].result.startsWith("6.40332"))
+        assertTrue(result[3].result.startsWith("640332"))
         assertTrue(result[3].result.endsWith(" ft²"))
         assertEquals("10", result[4].result)
         assertEquals("10", result[5].result)
@@ -2596,6 +2651,20 @@ class MathEngineTest {
         assertEquals("12", result[9].result)
         assertTrue(result[10].result.startsWith("128065.6"))
         assertEquals("11.0", result[11].result)
+        assertEquals("463932000.0", result[12].result)
+    }
+
+    @Test
+    fun `value and dropUnit preserve display-space rational value`() = runBlocking {
+        val lines = listOf(
+            createLine("rational(value(5 km))", sortOrder = 0),
+            createLine("rational(dropUnit(5 km))", sortOrder = 1),
+            createLine("rational(raw(5 km))", sortOrder = 2),
+        )
+        val result = MathEngine.calculate(lines, rationalMode = true)
+        assertEquals("5", result[0].result)
+        assertEquals("5", result[1].result)
+        assertEquals("5", result[2].result)
     }
 
     @Test
@@ -2609,11 +2678,11 @@ class MathEngineTest {
         )
         val result = MathEngine.calculate(lines)
         assertEquals("4.2", result[0].result)
-        assertTrue(result[1].result.startsWith("1.764E8"))
+        assertEquals("176400000.0", result[1].result)
         assertTrue(result[2].result.startsWith("128066.4"))
         assertEquals(640332000.0, result[3].result.split(" ")[0].toDouble(), 0.1)
         assertTrue(result[3].result.endsWith(" ft²"))
-        assertEquals(463932000.0, result[4].result.toDouble(), 0.01)
+        assertEquals("463932000.0", result[4].result)
     }
 
     @Test
@@ -2711,18 +2780,20 @@ class MathEngineTest {
 
     @Test
     fun `large numbers should use scientific notation`() {
-        // Threshold is 10^7 (10,000,000)
+        // Threshold is 10^15 (1,000,000,000,000,000)
         assertEquals("9999999.0", MathEngine.formatBigDecimal(java.math.BigDecimal("9999999")))
-        assertEquals("1.0E7", MathEngine.formatBigDecimal(java.math.BigDecimal("10000000")))
-        assertEquals("1.2345678E7", MathEngine.formatBigDecimal(java.math.BigDecimal("12345678")))
+        assertEquals("10000000.0", MathEngine.formatBigDecimal(java.math.BigDecimal("10000000")))
+        assertEquals("12345678.0", MathEngine.formatBigDecimal(java.math.BigDecimal("12345678")))
         assertEquals("1.0E100", MathEngine.formatBigDecimal(java.math.BigDecimal("10").pow(100)))
     }
 
     @Test
     fun `very small numbers should use scientific notation`() {
-        // Threshold is 10^-3 (0.001)
+        // Threshold is 10^-6 (0.000001)
         assertEquals("0.001", MathEngine.formatBigDecimal(java.math.BigDecimal("0.001")))
-        assertEquals("1.0E-4", MathEngine.formatBigDecimal(java.math.BigDecimal("0.0001")))
+        assertEquals("0.0001", MathEngine.formatBigDecimal(java.math.BigDecimal("0.0001")))
+        assertEquals("0.00001", MathEngine.formatBigDecimal(java.math.BigDecimal("0.00001")))
+        assertEquals("1.0E-6", MathEngine.formatBigDecimal(java.math.BigDecimal("0.000001")))
         assertEquals("1.23E-7", MathEngine.formatBigDecimal(java.math.BigDecimal("0.000000123")))
     }
 
@@ -2740,8 +2811,10 @@ class MathEngineTest {
 
     @Test
     fun `negative numbers in scientific notation`() {
-        assertEquals("-1.0E7", MathEngine.formatBigDecimal(java.math.BigDecimal("-10000000")))
-        assertEquals("-1.0E-4", MathEngine.formatBigDecimal(java.math.BigDecimal("-0.0001")))
+        assertEquals("-10000000.0", MathEngine.formatBigDecimal(java.math.BigDecimal("-10000000")))
+        assertEquals("-0.0001", MathEngine.formatBigDecimal(java.math.BigDecimal("-0.0001")))
+        assertEquals("-0.00001", MathEngine.formatBigDecimal(java.math.BigDecimal("-0.00001")))
+        assertEquals("-1.0E-6", MathEngine.formatBigDecimal(java.math.BigDecimal("-0.000001")))
     }
 
     @Test
@@ -2842,5 +2915,94 @@ class MathEngineTest {
         val result = MathEngine.calculate(lines)
         // lineno is 2 for the second line.
         assertEquals("2.0 km", result[1].result)
+    }
+
+    @Test
+    fun `global rational mode changes displayed division result`() = runBlocking {
+        val lines = listOf(createLine("1/3 + 1/3 + 1/3"))
+
+        // Standard mode
+        val standardResult = MathEngine.calculate(lines)
+        assertEquals("0.9999999999999999999999999999999999", standardResult[0].result)
+
+        val rationalResult = MathEngine.calculate(lines, rationalMode = true)
+        assertEquals("1", rationalResult[0].result)
+    }
+
+    @Test
+    fun `global rational mode changes displayed fractional result`() = runBlocking {
+        val lines = listOf(createLine("1/3 + 1/6"), createLine("1/3 + 2"))
+        val result = MathEngine.calculate(lines, rationalMode = true)
+        assertEquals("1/2", result[0].result)
+        assertEquals("7/3", result[1].result)
+    }
+
+    @Test
+    fun `rational function still stores rational result in decimal mode`() = runBlocking {
+        val lines = listOf(createLine("rational(0.5)"))
+        val result = MathEngine.calculate(lines, rationalMode = false)
+        assertEquals("1/2", result[0].result)
+    }
+
+    @Test
+    fun `fraction function still stores rational result in decimal mode`() = runBlocking {
+        val lines = listOf(createLine("fraction(0.75)"))
+        // Global rationalMode is false by default
+        val result = MathEngine.calculate(lines, rationalMode = false)
+        assertEquals("3/4", result[0].result)
+    }
+
+    @Test
+    fun `rational function preserves rational result for rational expressions`() = runBlocking {
+        val lines = listOf(createLine("rational(1/3)"))
+        val result = MathEngine.calculate(lines, rationalMode = false)
+        assertEquals("1/3", result[0].result)
+    }
+
+    @Test
+    fun `float function stores decimal result even in rational mode`() = runBlocking {
+        val lines = listOf(createLine("float(1/3)"))
+        val result = MathEngine.calculate(lines, rationalMode = true)
+        assertEquals("0.3333333333", result[0].result.take(12))
+    }
+
+    @Test
+    fun `in decimal unit conversion enforces integer check`() = runBlocking {
+        val lines = listOf(createLine("1/3 in decimal"))
+        val result = MathEngine.calculate(lines, rationalMode = true)
+        assertEquals("Err", result[0].result)
+    }
+
+    @Test
+    fun `rational function preserves rational result for quantities`() = runBlocking {
+        val lines = listOf(createLine("rational(5 km / 2)"))
+        val result = MathEngine.calculate(lines, rationalMode = false)
+        assertEquals("5/2 km", result[0].result)
+    }
+
+    @Test
+    fun `global rational mode changes displayed quantity result`() = runBlocking {
+        val lines = listOf(createLine("5 km / 2"))
+        val standardResult = MathEngine.calculate(lines, rationalMode = false)
+        val rationalResult = MathEngine.calculate(lines, rationalMode = true)
+        assertEquals("2.5 km", standardResult[0].result)
+        assertEquals("5/2 km", rationalResult[0].result)
+    }
+
+    @Test
+    fun `float function stores decimal result for quantities in rational mode`() = runBlocking {
+        val lines = listOf(createLine("float(5 km / 2)"))
+        val result = MathEngine.calculate(lines, rationalMode = true)
+        assertEquals("2.5 km", result[0].result)
+    }
+
+    @Test
+    fun `global rational mode changes displayed value for fractional arithmetic`() = runBlocking {
+        val lines = listOf(createLine("1 / 3"))
+        val standardResult = MathEngine.calculate(lines, rationalMode = false)
+        val rationalResult = MathEngine.calculate(lines, rationalMode = true)
+
+        assertEquals("0.3333333333333333333333333333333333", standardResult[0].result)
+        assertEquals("1/3", rationalResult[0].result)
     }
 }
