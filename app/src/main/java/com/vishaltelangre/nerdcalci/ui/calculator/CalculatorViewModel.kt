@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -73,6 +74,47 @@ class CalculatorViewModel(
     private val dao: CalculatorDao,
     private val prefs: SharedPreferences? = null
 ) : ViewModel() {
+    private val _autoOpenScratchpad = MutableStateFlow(
+        prefs?.getBoolean(Constants.PREF_AUTO_OPEN_SCRATCHPAD, false) ?: false
+    )
+    val autoOpenScratchpad: StateFlow<Boolean> = _autoOpenScratchpad
+
+    private val _scratchpadFileId = MutableStateFlow<Long?>(null)
+    val scratchpadFileId: StateFlow<Long?> = _scratchpadFileId
+
+    private val _isScratchpadReady = MutableStateFlow(false)
+    val isScratchpadReady: StateFlow<Boolean> = _isScratchpadReady
+
+    private val _currentTheme = MutableStateFlow(
+        prefs?.getString(PREF_THEME, DEFAULT_THEME) ?: DEFAULT_THEME
+    )
+    val currentTheme: StateFlow<String> = _currentTheme
+
+    private val _precision = MutableStateFlow(
+        (prefs?.getInt(Constants.SYNC_ENGINE_PRECISION, Constants.DEFAULT_PRECISION) ?: Constants.DEFAULT_PRECISION)
+            .coerceIn(Constants.MIN_PRECISION, Constants.MAX_PRECISION)
+    )
+    val precision: StateFlow<Int> = _precision
+
+    private val _autoBackupEnabled = MutableStateFlow(
+        prefs?.getBoolean(BackupManager.PREF_AUTO_BACKUP_ENABLED, true) ?: true
+    )
+    val autoBackupEnabled: StateFlow<Boolean> = _autoBackupEnabled
+
+    private val _syncEnabled = MutableStateFlow(
+        prefs?.getBoolean(SyncManager.PREF_SYNC_ENABLED, false) ?: false
+    )
+    val syncEnabled: StateFlow<Boolean> = _syncEnabled
+
+    private val _syncFolderUri = MutableStateFlow(
+        prefs?.getString(SyncManager.PREF_SYNC_FOLDER_URI, null)
+    )
+    val syncFolderUri: StateFlow<String?> = _syncFolderUri
+
+    private val _lastSyncAt = MutableStateFlow(
+        prefs?.getLong(SyncManager.PREF_LAST_SYNC_AT, 0L)?.takeIf { it > 0L }
+    )
+    val lastSyncAt: StateFlow<Long?> = _lastSyncAt
 
     // Mutex to ensure atomic recalculation cycles per fileId
     private val calculationMutex = Mutex()
@@ -81,6 +123,16 @@ class CalculatorViewModel(
     val restoreProgress = _restoreProgress.asStateFlow()
 
     private var conflictDeferred: kotlinx.coroutines.CompletableDeferred<ConflictResolution>? = null
+
+    init {
+        viewModelScope.launch {
+            try {
+                ensureScratchpadExists()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize scratchpad", e)
+            }
+        }
+    }
 
     fun resolveConflict(resolution: ConflictResolution, rememberChoice: Boolean) {
         if (rememberChoice) {
@@ -103,6 +155,27 @@ class CalculatorViewModel(
                 val context = MathEngine.buildVariableState(lines, this, loadingStack, rationalMode = rationalMode)
                 cache[fileName] = context
                 return context
+            }
+        }
+    }
+
+    private suspend fun ensureScratchpadExists() {
+        withContext(Dispatchers.IO) {
+            try {
+                val existing = dao.getTemporaryFile()
+                if (existing != null) {
+                    // Clear contents (session reset)
+                    dao.clearAllLines(existing.id)
+                    _scratchpadFileId.value = existing.id
+                } else {
+                    _scratchpadFileId.value = dao.createTemporaryFileWithInitialLine()
+                }
+                _isScratchpadReady.value = true
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Log.e(TAG, "Failed to ensure scratchpad exists", e)
+                _scratchpadFileId.value = null
+                _isScratchpadReady.value = false
             }
         }
     }
@@ -146,37 +219,6 @@ class CalculatorViewModel(
         private const val PREF_GROUPING_SEPARATOR_ENABLED = "number_format_grouping_separator_enabled"
         private const val DEFAULT_THEME = "system"
     }
-
-    private val _currentTheme = MutableStateFlow(
-        prefs?.getString(PREF_THEME, DEFAULT_THEME) ?: DEFAULT_THEME
-    )
-    val currentTheme: StateFlow<String> = _currentTheme
-
-    private val _precision = MutableStateFlow(
-        (prefs?.getInt(Constants.SYNC_ENGINE_PRECISION, Constants.DEFAULT_PRECISION) ?: Constants.DEFAULT_PRECISION)
-            .coerceIn(Constants.MIN_PRECISION, Constants.MAX_PRECISION)
-    )
-    val precision: StateFlow<Int> = _precision
-
-    private val _autoBackupEnabled = MutableStateFlow(
-        prefs?.getBoolean(BackupManager.PREF_AUTO_BACKUP_ENABLED, true) ?: true
-    )
-    val autoBackupEnabled: StateFlow<Boolean> = _autoBackupEnabled
-
-    private val _syncEnabled = MutableStateFlow(
-        prefs?.getBoolean(SyncManager.PREF_SYNC_ENABLED, false) ?: false
-    )
-    val syncEnabled: StateFlow<Boolean> = _syncEnabled
-
-    private val _syncFolderUri = MutableStateFlow(
-        prefs?.getString(SyncManager.PREF_SYNC_FOLDER_URI, null)
-    )
-    val syncFolderUri: StateFlow<String?> = _syncFolderUri
-
-    private val _lastSyncAt = MutableStateFlow(
-        prefs?.getLong(SyncManager.PREF_LAST_SYNC_AT, 0L)?.takeIf { it > 0L }
-    )
-    val lastSyncAt: StateFlow<Long?> = _lastSyncAt
 
     private val syncInProgress = AtomicBoolean(false)
     private val _isSyncing = MutableStateFlow(false)
@@ -249,6 +291,11 @@ class CalculatorViewModel(
         prefs?.getBoolean(Constants.SYNC_ENGINE_RATIONAL_MODE, Constants.DEFAULT_RATIONAL_MODE) ?: Constants.DEFAULT_RATIONAL_MODE
     )
     val rationalMode: StateFlow<Boolean> = _rationalMode
+
+    fun setAutoOpenScratchpad(enabled: Boolean) {
+        _autoOpenScratchpad.value = enabled
+        prefs?.edit()?.putBoolean(Constants.PREF_AUTO_OPEN_SCRATCHPAD, enabled)?.apply()
+    }
 
     fun setTheme(theme: String) {
         _currentTheme.value = theme

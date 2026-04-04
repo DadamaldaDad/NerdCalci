@@ -12,17 +12,24 @@ import kotlinx.coroutines.flow.Flow
  */
 @Dao
 abstract class CalculatorDao {
-    // Returns files with pinned files first, then sorted by most recently modified
-    @Query("SELECT * FROM files ORDER BY isPinned DESC, lastModified DESC")
+    // Returns files with pinned files first, then sorted by most recently modified.
+    // Excludes temporary files.
+    @Query("SELECT * FROM files WHERE isTemporary = 0 ORDER BY isPinned DESC, lastModified DESC")
     abstract fun getAllFiles(): Flow<List<FileEntity>>
 
-    @Query("SELECT * FROM files ORDER BY isPinned DESC, lastModified DESC")
+    @Query("SELECT * FROM files WHERE isTemporary = 1 LIMIT 1")
+    abstract suspend fun getTemporaryFile(): FileEntity?
+
+    @Query("SELECT * FROM files WHERE isTemporary = 0 ORDER BY isPinned DESC, lastModified DESC")
     abstract suspend fun getAllFilesSync(): List<FileEntity>
+
+    @Query("SELECT name FROM files WHERE isTemporary = 0 AND name LIKE 'Untitled %'")
+    abstract suspend fun getUntitledFileNames(): List<String>
 
     @Query("SELECT * FROM files WHERE id = :fileId")
     abstract suspend fun getFileById(fileId: Long): FileEntity?
 
-    @Query("SELECT * FROM files WHERE name = :name")
+    @Query("SELECT * FROM files WHERE name = :name AND isTemporary = 0")
     abstract suspend fun getFileByName(name: String): FileEntity?
 
     @Query("SELECT * FROM files WHERE syncId = :syncId")
@@ -31,10 +38,10 @@ abstract class CalculatorDao {
     @Query("SELECT COUNT(*) FROM files WHERE isPinned = 1")
     abstract suspend fun getPinnedFilesCount(): Int
 
-    @Query("SELECT EXISTS(SELECT 1 FROM files WHERE name = :name)")
+    @Query("SELECT EXISTS(SELECT 1 FROM files WHERE name = :name AND isTemporary = 0)")
     abstract suspend fun doesFileExist(name: String): Boolean
 
-    @Query("SELECT EXISTS(SELECT 1 FROM files WHERE name = :name AND id != :excludeId)")
+    @Query("SELECT EXISTS(SELECT 1 FROM files WHERE name = :name AND isTemporary = 0 AND id != :excludeId)")
     abstract suspend fun doesFileExist(name: String, excludeId: Long): Boolean
 
     // Returns lines ordered by sortOrder (determines display order in UI)
@@ -44,7 +51,7 @@ abstract class CalculatorDao {
     // Synchronous version for operations that need immediate results
     @Query("SELECT * FROM lines WHERE fileId = :fileId ORDER BY sortOrder ASC, id ASC")
     abstract suspend fun getLinesForFileSync(fileId: Long): List<LineEntity>
-    
+
     @Query("SELECT * FROM lines WHERE id = :lineId")
     abstract suspend fun getLineById(lineId: Long): LineEntity?
 
@@ -182,11 +189,30 @@ abstract class CalculatorDao {
     }
 
     @Transaction
+    open suspend fun createTemporaryFileWithInitialLine(createdAt: Long = System.currentTimeMillis()): Long {
+        val uniqueName = "NerdCalci-Scratchpad-${createdAt}"
+        val fileId = insertFile(
+            FileEntity(
+                name = uniqueName,
+                lastModified = createdAt,
+                createdAt = createdAt,
+                isTemporary = true
+            )
+        )
+        internalInsertLine(LineEntity(fileId = fileId, sortOrder = 0, expression = "", result = ""))
+        return fileId
+    }
+
+    @Transaction
     open suspend fun duplicateFile(sourceFileId: Long, createdAt: Long): Long? {
         val sourceFile = getFileById(sourceFileId) ?: return null
         val sourceLines = getLinesForFileSync(sourceFileId)
 
-        val baseName = "Copy of ${sourceFile.name}"
+        val baseName = if (sourceFile.isTemporary) {
+            "Copy of Scratchpad"
+        } else {
+            "Copy of ${sourceFile.name}"
+        }
         val uniqueName = FilenameUtils.generateUniqueFileName(baseName.take(Constants.MAX_FILE_NAME_LENGTH)) { name ->
             doesFileExist(name)
         }
