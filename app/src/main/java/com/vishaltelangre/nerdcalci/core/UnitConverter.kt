@@ -249,6 +249,7 @@ object UnitConverter {
         Unit("Joule", listOf("J", "joule", "joules"), UnitCategory.ENERGY, BigDecimal.ONE),
         Unit("Kilojoule", listOf("kJ", "kilojoule", "kilojoules"), UnitCategory.ENERGY, BigDecimal("1000.0")),
         Unit("Megajoule", listOf("MJ", "megajoule", "megajoules"), UnitCategory.ENERGY, BigDecimal("1e6")),
+        Unit("Gigajoule", listOf("GJ", "gigajoule", "gigajoules"), UnitCategory.ENERGY, BigDecimal("1e9")),
         Unit("Calorie", listOf("cal", "calorie", "calories"), UnitCategory.ENERGY, BigDecimal("4.184")),
         Unit("Kilocalorie", listOf("kCal", "kcal", "kilocalorie", "kilocalories"), UnitCategory.ENERGY, BigDecimal("4184.0")),
         Unit("Watt hour", listOf("Wh", "watt hour", "watt hours"), UnitCategory.ENERGY, BigDecimal("3600.0")),
@@ -256,6 +257,9 @@ object UnitConverter {
         Unit("Electron volt", listOf("eV", "electronvolt", "electron volts"), UnitCategory.ENERGY, BigDecimal("1.602176634e-19")),
         Unit("Foot pound-force", listOf("ft lbf", "ft_lbf", "foot_pound"), UnitCategory.ENERGY, BigDecimal("1.3558179483314")),
         Unit("British thermal unit", listOf("BTU", "btu"), UnitCategory.ENERGY, BigDecimal("1055.05585262")),
+        Unit("Tons of TNT equivalent", listOf("tTNT", "ton of TNT", "tons of TNT", "tonne of TNT", "tonnes of TNT"), UnitCategory.ENERGY, BigDecimal("4.184e9")),
+        Unit("Kilotons of TNT equivalent", listOf("ktTNT", "kiloton of TNT", "kilotons of TNT", "kilotonne of TNT", "kilotonnes of TNT"), UnitCategory.ENERGY, BigDecimal("4.184e12")),
+        Unit("Megatons of TNT equivalent", listOf("MtTNT", "megaton of TNT", "megatons of TNT", "megatonne of TNT", "megatonnes of TNT"), UnitCategory.ENERGY, BigDecimal("4.184e15")),
 
         // --- POWER --- (Base: Watt)
         Unit("Watt", listOf("W", "watt", "watts"), UnitCategory.POWER, BigDecimal.ONE),
