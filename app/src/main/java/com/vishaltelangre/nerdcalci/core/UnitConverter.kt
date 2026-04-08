@@ -636,7 +636,9 @@ object UnitConverter {
         if (speed == "mps" && time == "s") return "m"
         if (speed == "kmh" && time == "h") return "km"
         if (speed == "mph" && time == "h") return "mi"
+        if (speed == "kn" && time == "h") return "NM"
         if (speed == "fps" && time == "s") return "ft"
+        if (speed == "speed of light" && time == "s") return "m"
         return null
     }
 
@@ -644,6 +646,7 @@ object UnitConverter {
         if (length == "m" && time == "s") return "mps"
         if (length == "km" && time == "h") return "kmh"
         if (length == "mi" && time == "h") return "mph"
+        if (length == "NM" && time == "h") return "kn"
         if (length == "ft" && time == "s") return "fps"
         return null
     }
