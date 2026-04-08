@@ -170,4 +170,20 @@ class MixedUnitUsageTest {
             assertEquals("10.0 km", result[2].result)
         }
     }
+
+    @Test
+    fun `multiply speed by time`() {
+        testCalculate("10 mps * 5 s", "30 kmh * 2 h") { result ->
+            assertEquals("50.0 m", result[0].result)
+            assertEquals("60.0 km", result[1].result)
+        }
+    }
+
+    @Test
+    fun `divide length by time`() {
+        testCalculate("50 m / 10 s", "30 km / 2 h") { result ->
+            assertEquals("5.0 mps", result[0].result)
+            assertEquals("15.0 kmh", result[1].result)
+        }
+    }
 }

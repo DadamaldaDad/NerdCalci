@@ -3178,7 +3178,17 @@ class UnitConversionStaticTest {
         "10 BTU in J",
         "10 J in BTU",
         "10 btu in J",
-        "10 J in btu"
+        "10 J in btu",
+        "10 GJ in J",
+        "10 J in GJ",
+        "10 gigajoules in J",
+        "10 J in gigajoules",
+        "10 tTNT in J",
+        "10 J in tTNT",
+        "10 ktTNT in J",
+        "10 J in ktTNT",
+        "10 MtTNT in J",
+        "10 J in MtTNT"
     ) { result ->
         val val0 = result[0].result.substringBefore(' ').toDoubleOrNull()
         assertNotNull(val0)
@@ -3360,6 +3370,36 @@ class UnitConversionStaticTest {
         val val59 = result[59].result.substringBefore(' ').toDoubleOrNull()
         assertNotNull(val59)
         assertEquals("J to btu", 0.009478171203133172, val59!!, 0.05)
+        val val60 = result[60].result.substringBefore(' ').toDoubleOrNull()
+        assertNotNull(val60)
+        assertEquals("GJ to J", 10000000000.0, val60!!, 0.05)
+        val val61 = result[61].result.substringBefore(' ').toDoubleOrNull()
+        assertNotNull(val61)
+        assertEquals("J to GJ", 0.00000001, val61!!, 0.05)
+        val val62 = result[62].result.substringBefore(' ').toDoubleOrNull()
+        assertNotNull(val62)
+        assertEquals("gigajoules to J", 10000000000.0, val62!!, 0.05)
+        val val63 = result[63].result.substringBefore(' ').toDoubleOrNull()
+        assertNotNull(val63)
+        assertEquals("J to gigajoules", 0.00000001, val63!!, 0.05)
+        val val64 = result[64].result.substringBefore(' ').toDoubleOrNull()
+        assertNotNull(val64)
+        assertEquals("tTNT to J", 41840000000.0, val64!!, 0.05)
+        val val65 = result[65].result.substringBefore(' ').toDoubleOrNull()
+        assertNotNull(val65)
+        assertEquals("J to tTNT", 2.3900573614E-10, val65!!, 0.05)
+        val val66 = result[66].result.substringBefore(' ').toDoubleOrNull()
+        assertNotNull(val66)
+        assertEquals("ktTNT to J", 41840000000000.0, val66!!, 0.05)
+        val val67 = result[67].result.substringBefore(' ').toDoubleOrNull()
+        assertNotNull(val67)
+        assertEquals("J to ktTNT", 2.3900573614E-13, val67!!, 0.05)
+        val val68 = result[68].result.substringBefore(' ').toDoubleOrNull()
+        assertNotNull(val68)
+        assertEquals("MtTNT to J", 41840000000000000.0, val68!!, 0.05)
+        val val69 = result[69].result.substringBefore(' ').toDoubleOrNull()
+        assertNotNull(val69)
+        assertEquals("J to tTNT", 2.3900573614E-16, val69!!, 0.05)
     }
 
     @Test
