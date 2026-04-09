@@ -53,10 +53,10 @@ object UnitConverter {
             sameAreaLengthFamily(right, left)?.let { cubeSymbolForFamily(it) }
         }),
         UnitRule(UnitCategory.SPEED, UnitCategory.TIME, result = { left, right ->
-            speedAndTimeToLength(left.symbols[0], right.symbols[0])
+            matchSpeedToLength(left.symbols[0])
         }),
         UnitRule(UnitCategory.TIME, UnitCategory.SPEED, result = { left, right ->
-            speedAndTimeToLength(right.symbols[0], left.symbols[0])
+            matchSpeedToLength(right.symbols[0])
         })
     )
 
@@ -87,7 +87,7 @@ object UnitConverter {
         UnitRule(UnitCategory.PRESSURE, UnitCategory.PRESSURE, result = { _, _ -> "unitless" }),
         UnitRule(UnitCategory.NUMERAL_SYSTEM, UnitCategory.NUMERAL_SYSTEM, result = { _, _ -> "unitless" }),
         UnitRule(UnitCategory.LENGTH, UnitCategory.TIME, result = { left, right ->
-            lengthAndTimeToSpeed(left.symbols[0], right.symbols[0])
+            matchLengthToSpeed(left.symbols[0])
         })
     )
 
@@ -635,23 +635,24 @@ object UnitConverter {
         else -> null
     }
 
-    private fun speedAndTimeToLength(speed: String, time: String): String? {
-        if (speed == "mps" && time == "s") return "m"
-        if (speed == "kmh" && time == "h") return "km"
-        if (speed == "mph" && time == "h") return "mi"
-        if (speed == "kn" && time == "h") return "NM"
-        if (speed == "fps" && time == "s") return "ft"
-        if (speed == "speed of light" && time == "s") return "m"
-        return null
+    private fun matchSpeedToLength(speed: String): String? = when (speed) {
+        "mps" -> "m"
+        "kmh" -> "km"
+        "mph" -> "mi"
+        "kn" -> "NM"
+        "fps" -> "ft"
+        "speed of light" -> "m"
+        else -> null
     }
 
-    private fun lengthAndTimeToSpeed(length: String, time: String): String? {
-        if (length == "m" && time == "s") return "mps"
-        if (length == "km" && time == "h") return "kmh"
-        if (length == "mi" && time == "h") return "mph"
-        if (length == "NM" && time == "h") return "kn"
-        if (length == "ft" && time == "s") return "fps"
-        return null
+    private fun matchLengthToSpeed(length: String): String? = when(length)
+    {
+        "m" -> "mps"
+        "km" -> "kmh"
+        "mi" -> "mph"
+        "NM" -> "kn"
+        "ft" -> "fps"
+        else -> null
     }
 
     fun isNumeralSystemSymbol(symbol: String): Boolean {
