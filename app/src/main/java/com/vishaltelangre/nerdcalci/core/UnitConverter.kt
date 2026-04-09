@@ -647,11 +647,23 @@ object UnitConverter {
 
     private fun matchLengthToSpeed(length: String): String? = when(length)
     {
+        "pm" -> "mps"
+        "nm" -> "mps"
+        "µm" -> "mps"
+        "mm" -> "mps"
+        "cm" -> "mps"
+        "dm" -> "mps"
         "m" -> "mps"
         "km" -> "kmh"
+        "fur" -> "mph"
         "mi" -> "mph"
+        "ftm" -> "kn"
         "NM" -> "kn"
+        "inch" -> "fps"
         "ft" -> "fps"
+        "ly" -> "mps"
+        "Å" -> "mps"
+        "au" -> "mps"
         else -> null
     }
 
